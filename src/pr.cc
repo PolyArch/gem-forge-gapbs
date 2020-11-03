@@ -11,7 +11,6 @@
 #include "graph.h"
 #include "pvector.h"
 
-
 /*
 GAP Benchmark Suite
 Kernel: PageRank (PR)
@@ -25,7 +24,6 @@ it is not necesarily the fastest way to implement it. It does perform the
 updates in the pull direction to remove the need for atomics.
 */
 
-
 using namespace std;
 
 typedef float ScoreT;
@@ -37,13 +35,13 @@ pvector<ScoreT> PageRankPull(const Graph &g, int max_iters,
   const ScoreT base_score = (1.0f - kDamp) / g.num_nodes();
   pvector<ScoreT> scores(g.num_nodes(), init_score);
   pvector<ScoreT> outgoing_contrib(g.num_nodes());
-  for (int iter=0; iter < max_iters; iter++) {
+  for (int iter = 0; iter < max_iters; iter++) {
     double error = 0;
-    #pragma omp parallel for
-    for (NodeID n=0; n < g.num_nodes(); n++)
+#pragma omp parallel for
+    for (NodeID n = 0; n < g.num_nodes(); n++)
       outgoing_contrib[n] = scores[n] / g.out_degree(n);
-    #pragma omp parallel for reduction(+ : error) schedule(dynamic, 64)
-    for (NodeID u=0; u < g.num_nodes(); u++) {
+#pragma omp parallel for reduction(+ : error) schedule(dynamic, 64)
+    for (NodeID u = 0; u < g.num_nodes(); u++) {
       ScoreT incoming_total = 0;
       for (NodeID v : g.in_neigh(u))
         incoming_total += outgoing_contrib[v];
@@ -58,10 +56,9 @@ pvector<ScoreT> PageRankPull(const Graph &g, int max_iters,
   return scores;
 }
 
-
 void PrintTopScores(const Graph &g, const pvector<ScoreT> &scores) {
   vector<pair<NodeID, ScoreT>> score_pairs(g.num_nodes());
-  for (NodeID n=0; n < g.num_nodes(); n++) {
+  for (NodeID n = 0; n < g.num_nodes(); n++) {
     score_pairs[n] = make_pair(n, scores[n]);
   }
   int k = 5;
@@ -71,11 +68,10 @@ void PrintTopScores(const Graph &g, const pvector<ScoreT> &scores) {
     cout << kvp.second << ":" << kvp.first << endl;
 }
 
-
 // Verifies by asserting a single serial iteration in push direction has
 //   error < target_error
 bool PRVerifier(const Graph &g, const pvector<ScoreT> &scores,
-                        double target_error) {
+                double target_error) {
   const ScoreT base_score = (1.0f - kDamp) / g.num_nodes();
   pvector<ScoreT> incomming_sums(g.num_nodes(), 0);
   double error = 0;
@@ -92,17 +88,16 @@ bool PRVerifier(const Graph &g, const pvector<ScoreT> &scores,
   return error < target_error;
 }
 
-
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   CLPageRank cli(argc, argv, "pagerank", 1e-4, 20);
   if (!cli.ParseArgs())
     return -1;
   Builder b(cli);
   Graph g = b.MakeGraph();
-  auto PRBound = [&cli] (const Graph &g) {
+  auto PRBound = [&cli](const Graph &g) {
     return PageRankPull(g, cli.max_iters(), cli.tolerance());
   };
-  auto VerifierBound = [&cli] (const Graph &g, const pvector<ScoreT> &scores) {
+  auto VerifierBound = [&cli](const Graph &g, const pvector<ScoreT> &scores) {
     return PRVerifier(g, scores, cli.tolerance());
   };
   BenchmarkKernel(cli, g, PRBound, PrintTopScores, VerifierBound);

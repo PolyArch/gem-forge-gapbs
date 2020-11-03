@@ -15,7 +15,6 @@
 #include "pvector.h"
 #include "timer.h"
 
-
 /*
 GAP Benchmark Suite
 Kernel: Connected Components (CC)
@@ -40,29 +39,28 @@ more consistent performance for undirected graphs.
     Processing, 2010.
 */
 
-
 using namespace std;
-
 
 // The hooking condition (comp_u < comp_v) may not coincide with the edge's
 // direction, so we use a min-max swap such that lower component IDs propagate
 // independent of the edge's direction.
 pvector<NodeID> ShiloachVishkin(const Graph &g) {
   pvector<NodeID> comp(g.num_nodes());
-  #pragma omp parallel for
-  for (NodeID n=0; n < g.num_nodes(); n++)
+#pragma omp parallel for
+  for (NodeID n = 0; n < g.num_nodes(); n++)
     comp[n] = n;
   bool change = true;
   int num_iter = 0;
   while (change) {
     change = false;
     num_iter++;
-    #pragma omp parallel for
-    for (NodeID u=0; u < g.num_nodes(); u++) {
+#pragma omp parallel for
+    for (NodeID u = 0; u < g.num_nodes(); u++) {
       for (NodeID v : g.out_neigh(u)) {
         NodeID comp_u = comp[u];
         NodeID comp_v = comp[v];
-        if (comp_u == comp_v) continue;
+        if (comp_u == comp_v)
+          continue;
         // Hooking condition so lower component ID wins independent of direction
         NodeID high_comp = comp_u > comp_v ? comp_u : comp_v;
         NodeID low_comp = comp_u + (comp_v - high_comp);
@@ -72,8 +70,8 @@ pvector<NodeID> ShiloachVishkin(const Graph &g) {
         }
       }
     }
-    #pragma omp parallel for
-    for (NodeID n=0; n < g.num_nodes(); n++) {
+#pragma omp parallel for
+    for (NodeID n = 0; n < g.num_nodes(); n++) {
       while (comp[n] != comp[comp[n]]) {
         comp[n] = comp[comp[n]];
       }
@@ -82,7 +80,6 @@ pvector<NodeID> ShiloachVishkin(const Graph &g) {
   cout << "Shiloach-Vishkin took " << num_iter << " iterations" << endl;
   return comp;
 }
-
 
 void PrintCompStats(const Graph &g, const pvector<NodeID> &comp) {
   cout << endl;
@@ -101,7 +98,6 @@ void PrintCompStats(const Graph &g, const pvector<NodeID> &comp) {
     cout << kvp.second << ":" << kvp.first << endl;
   cout << "There are " << count.size() << " components" << endl;
 }
-
 
 // Verifies CC result by performing a BFS from a vertex in each component
 // - Asserts search does not reach a vertex with a different component label
@@ -143,14 +139,13 @@ bool CCVerifier(const Graph &g, const pvector<NodeID> &comp) {
       }
     }
   }
-  for (NodeID n=0; n < g.num_nodes(); n++)
+  for (NodeID n = 0; n < g.num_nodes(); n++)
     if (!visited.get_bit(n))
       return false;
   return true;
 }
 
-
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   CLApp cli(argc, argv, "connected-components");
   if (!cli.ParseArgs())
     return -1;

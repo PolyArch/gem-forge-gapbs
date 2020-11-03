@@ -16,7 +16,6 @@
 #include "timer.h"
 #include "util.h"
 
-
 /*
 GAP Benchmark Suite
 Kernel: Betweenness Centrality (BC)
@@ -42,29 +41,27 @@ propagation phase.
     International Symposium on Parallel & Distributed Processing (IPDPS), 2009.
 */
 
-
 using namespace std;
 typedef float ScoreT;
 typedef double CountT;
 
-
 void PBFS(const Graph &g, NodeID source, pvector<CountT> &path_counts,
-    Bitmap &succ, vector<SlidingQueue<NodeID>::iterator> &depth_index,
-    SlidingQueue<NodeID> &queue) {
+          Bitmap &succ, vector<SlidingQueue<NodeID>::iterator> &depth_index,
+          SlidingQueue<NodeID> &queue) {
   pvector<NodeID> depths(g.num_nodes(), -1);
   depths[source] = 0;
   path_counts[source] = 1;
   queue.push_back(source);
   depth_index.push_back(queue.begin());
   queue.slide_window();
-  const NodeID* g_out_start = g.out_neigh(0).begin();
-  #pragma omp parallel
+  const NodeID *g_out_start = g.out_neigh(0).begin();
+#pragma omp parallel
   {
     NodeID depth = 0;
     QueueBuffer<NodeID> lqueue(queue);
     while (!queue.empty()) {
       depth++;
-      #pragma omp for schedule(dynamic, 64) nowait
+#pragma omp for schedule(dynamic, 64) nowait
       for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
         NodeID u = *q_iter;
         for (NodeID &v : g.out_neigh(u)) {
@@ -74,14 +71,14 @@ void PBFS(const Graph &g, NodeID source, pvector<CountT> &path_counts,
           }
           if (depths[v] == depth) {
             succ.set_bit_atomic(&v - g_out_start);
-            #pragma omp atomic
+#pragma omp atomic
             path_counts[v] += path_counts[u];
           }
         }
       }
       lqueue.flush();
-      #pragma omp barrier
-      #pragma omp single
+#pragma omp barrier
+#pragma omp single
       {
         depth_index.push_back(queue.begin());
         queue.slide_window();
@@ -90,7 +87,6 @@ void PBFS(const Graph &g, NodeID source, pvector<CountT> &path_counts,
   }
   depth_index.push_back(queue.begin());
 }
-
 
 pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
                         NodeID num_iters) {
@@ -103,8 +99,8 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
   SlidingQueue<NodeID> queue(g.num_nodes());
   t.Stop();
   PrintStep("a", t.Seconds());
-  const NodeID* g_out_start = g.out_neigh(0).begin();
-  for (NodeID iter=0; iter < num_iters; iter++) {
+  const NodeID *g_out_start = g.out_neigh(0).begin();
+  for (NodeID iter = 0; iter < num_iters; iter++) {
     NodeID source = sp.PickNext();
     cout << "source: " << source << endl;
     t.Start();
@@ -117,9 +113,9 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
     PrintStep("b", t.Seconds());
     pvector<ScoreT> deltas(g.num_nodes(), 0);
     t.Start();
-    for (int d=depth_index.size()-2; d >= 0; d--) {
-      #pragma omp parallel for schedule(dynamic, 64)
-      for (auto it = depth_index[d]; it < depth_index[d+1]; it++) {
+    for (int d = depth_index.size() - 2; d >= 0; d--) {
+#pragma omp parallel for schedule(dynamic, 64)
+      for (auto it = depth_index[d]; it < depth_index[d + 1]; it++) {
         NodeID u = *it;
         ScoreT delta_u = 0;
         for (NodeID &v : g.out_neigh(u)) {
@@ -136,15 +132,14 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
   }
   // normalize scores
   ScoreT biggest_score = 0;
-  #pragma omp parallel for reduction(max : biggest_score)
-  for (NodeID n=0; n < g.num_nodes(); n++)
+#pragma omp parallel for reduction(max : biggest_score)
+  for (NodeID n = 0; n < g.num_nodes(); n++)
     biggest_score = max(biggest_score, scores[n]);
-  #pragma omp parallel for
-  for (NodeID n=0; n < g.num_nodes(); n++)
+#pragma omp parallel for
+  for (NodeID n = 0; n < g.num_nodes(); n++)
     scores[n] = scores[n] / biggest_score;
   return scores;
 }
-
 
 void PrintTopScores(const Graph &g, const pvector<ScoreT> &scores) {
   vector<pair<NodeID, ScoreT>> score_pairs(g.num_nodes());
@@ -156,7 +151,6 @@ void PrintTopScores(const Graph &g, const pvector<ScoreT> &scores) {
     cout << kvp.second << ":" << kvp.first << endl;
 }
 
-
 // Still uses Brandes algorithm, but has the following differences:
 // - serial (no need for atomics or dynamic scheduling)
 // - uses vector for BFS queue
@@ -165,7 +159,7 @@ void PrintTopScores(const Graph &g, const pvector<ScoreT> &scores) {
 bool BCVerifier(const Graph &g, SourcePicker<Graph> &sp, NodeID num_iters,
                 const pvector<ScoreT> &scores_to_test) {
   pvector<ScoreT> scores(g.num_nodes(), 0);
-  for (int iter=0; iter < num_iters; iter++) {
+  for (int iter = 0; iter < num_iters; iter++) {
     NodeID source = sp.PickNext();
     // BFS phase, only records depth & path_counts
     pvector<int> depths(g.num_nodes(), -1);
@@ -197,7 +191,7 @@ bool BCVerifier(const Graph &g, SourcePicker<Graph> &sp, NodeID num_iters,
     }
     // Going from farthest to clostest, compute "depencies" (deltas)
     pvector<ScoreT> deltas(g.num_nodes(), 0);
-    for (int depth=verts_at_depth.size()-1; depth >= 0; depth--) {
+    for (int depth = verts_at_depth.size() - 1; depth >= 0; depth--) {
       for (NodeID u : verts_at_depth[depth]) {
         for (NodeID v : g.out_neigh(u)) {
           if (depths[v] == depths[u] + 1) {
@@ -225,8 +219,7 @@ bool BCVerifier(const Graph &g, SourcePicker<Graph> &sp, NodeID num_iters,
   return all_ok;
 }
 
-
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   CLIterApp cli(argc, argv, "betweenness-centrality", 1);
   if (!cli.ParseArgs())
     return -1;
@@ -235,11 +228,12 @@ int main(int argc, char* argv[]) {
   Builder b(cli);
   Graph g = b.MakeGraph();
   SourcePicker<Graph> sp(g, cli.start_vertex());
-  auto BCBound =
-    [&sp, &cli] (const Graph &g) { return Brandes(g, sp, cli.num_iters()); };
+  auto BCBound = [&sp, &cli](const Graph &g) {
+    return Brandes(g, sp, cli.num_iters());
+  };
   SourcePicker<Graph> vsp(g, cli.start_vertex());
-  auto VerifierBound = [&vsp, &cli] (const Graph &g,
-                                     const pvector<ScoreT> &scores) {
+  auto VerifierBound = [&vsp, &cli](const Graph &g,
+                                    const pvector<ScoreT> &scores) {
     return BCVerifier(g, vsp, cli.num_iters(), scores);
   };
   BenchmarkKernel(cli, g, BCBound, PrintTopScores, VerifierBound);

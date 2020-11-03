@@ -14,7 +14,6 @@
 #include "sliding_queue.h"
 #include "timer.h"
 
-
 /*
 GAP Benchmark Suite
 Kernel: Breadth-First Search (BFS)
@@ -40,15 +39,14 @@ them in parent array as negative numbers. Thus the encoding of parent is:
     November 2012.
 */
 
-
 using namespace std;
 
 int64_t BUStep(const Graph &g, pvector<NodeID> &parent, Bitmap &front,
                Bitmap &next) {
   int64_t awake_count = 0;
   next.reset();
-  #pragma omp parallel for reduction(+ : awake_count) schedule(dynamic, 1024)
-  for (NodeID u=0; u < g.num_nodes(); u++) {
+#pragma omp parallel for reduction(+ : awake_count) schedule(dynamic, 1024)
+  for (NodeID u = 0; u < g.num_nodes(); u++) {
     if (parent[u] < 0) {
       for (NodeID v : g.in_neigh(u)) {
         if (front.get_bit(v)) {
@@ -63,14 +61,13 @@ int64_t BUStep(const Graph &g, pvector<NodeID> &parent, Bitmap &front,
   return awake_count;
 }
 
-
 int64_t TDStep(const Graph &g, pvector<NodeID> &parent,
                SlidingQueue<NodeID> &queue) {
   int64_t scout_count = 0;
-  #pragma omp parallel
+#pragma omp parallel
   {
     QueueBuffer<NodeID> lqueue(queue);
-    #pragma omp for reduction(+ : scout_count)
+#pragma omp for reduction(+ : scout_count)
     for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
       NodeID u = *q_iter;
       for (NodeID v : g.out_neigh(u)) {
@@ -88,9 +85,8 @@ int64_t TDStep(const Graph &g, pvector<NodeID> &parent,
   return scout_count;
 }
 
-
 void QueueToBitmap(const SlidingQueue<NodeID> &queue, Bitmap &bm) {
-  #pragma omp parallel for
+#pragma omp parallel for
   for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
     NodeID u = *q_iter;
     bm.set_bit_atomic(u);
@@ -99,11 +95,11 @@ void QueueToBitmap(const SlidingQueue<NodeID> &queue, Bitmap &bm) {
 
 void BitmapToQueue(const Graph &g, const Bitmap &bm,
                    SlidingQueue<NodeID> &queue) {
-  #pragma omp parallel
+#pragma omp parallel
   {
     QueueBuffer<NodeID> lqueue(queue);
-    #pragma omp for
-    for (NodeID n=0; n < g.num_nodes(); n++)
+#pragma omp for
+    for (NodeID n = 0; n < g.num_nodes(); n++)
       if (bm.get_bit(n))
         lqueue.push_back(n);
     lqueue.flush();
@@ -113,8 +109,8 @@ void BitmapToQueue(const Graph &g, const Bitmap &bm,
 
 pvector<NodeID> InitParent(const Graph &g) {
   pvector<NodeID> parent(g.num_nodes());
-  #pragma omp parallel for
-  for (NodeID n=0; n < g.num_nodes(); n++)
+#pragma omp parallel for
+  for (NodeID n = 0; n < g.num_nodes(); n++)
     parent[n] = g.out_degree(n) != 0 ? -g.out_degree(n) : -1;
   return parent;
 }
@@ -165,13 +161,12 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
       PrintStep("td", t.Seconds(), queue.size());
     }
   }
-  #pragma omp parallel for
+#pragma omp parallel for
   for (NodeID n = 0; n < g.num_nodes(); n++)
     if (parent[n] < -1)
       parent[n] = -1;
   return parent;
 }
-
 
 void PrintBFSStats(const Graph &g, const pvector<NodeID> &bfs_tree) {
   int64_t tree_size = 0;
@@ -186,14 +181,12 @@ void PrintBFSStats(const Graph &g, const pvector<NodeID> &bfs_tree) {
   cout << n_edges << " edges" << endl;
 }
 
-
 // BFS verifier does a serial BFS from same source and asserts:
 // - parent[source] = source
 // - parent[v] = u  =>  depth[v] = depth[u] + 1 (except for source)
 // - parent[v] = u  => there is edge from u to v
 // - all vertices reachable from source have a parent
-bool BFSVerifier(const Graph &g, NodeID source,
-                 const pvector<NodeID> &parent) {
+bool BFSVerifier(const Graph &g, NodeID source, const pvector<NodeID> &parent) {
   pvector<int> depth(g.num_nodes(), -1);
   depth[source] = 0;
   vector<NodeID> to_visit;
@@ -240,17 +233,16 @@ bool BFSVerifier(const Graph &g, NodeID source,
   return true;
 }
 
-
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   CLApp cli(argc, argv, "breadth-first search");
   if (!cli.ParseArgs())
     return -1;
   Builder b(cli);
   Graph g = b.MakeGraph();
   SourcePicker<Graph> sp(g, cli.start_vertex());
-  auto BFSBound = [&sp] (const Graph &g) { return DOBFS(g, sp.PickNext()); };
+  auto BFSBound = [&sp](const Graph &g) { return DOBFS(g, sp.PickNext()); };
   SourcePicker<Graph> vsp(g, cli.start_vertex());
-  auto VerifierBound = [&vsp] (const Graph &g, const pvector<NodeID> &parent) {
+  auto VerifierBound = [&vsp](const Graph &g, const pvector<NodeID> &parent) {
     return BFSVerifier(g, vsp.PickNext(), parent);
   };
   BenchmarkKernel(cli, g, BFSBound, PrintBFSStats, VerifierBound);

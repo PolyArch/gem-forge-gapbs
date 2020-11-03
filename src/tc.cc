@@ -12,7 +12,6 @@
 #include "graph.h"
 #include "pvector.h"
 
-
 /*
 GAP Benchmark Suite
 Kernel: Triangle Counting (TC)
@@ -41,13 +40,12 @@ degree distribution is sufficiently non-uniform. To decide whether or not
 to relabel the graph, we use the heuristic in WorthRelabelling.
 */
 
-
 using namespace std;
 
 size_t OrderedCount(const Graph &g) {
   size_t total = 0;
-  #pragma omp parallel for reduction(+ : total) schedule(dynamic, 64)
-  for (NodeID u=0; u < g.num_nodes(); u++) {
+#pragma omp parallel for reduction(+ : total) schedule(dynamic, 64)
+  for (NodeID u = 0; u < g.num_nodes(); u++) {
     for (NodeID v : g.out_neigh(u)) {
       if (v > u)
         break;
@@ -65,7 +63,6 @@ size_t OrderedCount(const Graph &g) {
   return total;
 }
 
-
 // heuristic to see if sufficently dense power-law graph
 bool WorthRelabelling(const Graph &g) {
   int64_t average_degree = g.num_edges() / g.num_nodes();
@@ -75,16 +72,15 @@ bool WorthRelabelling(const Graph &g) {
   int64_t num_samples = min(int64_t(1000), g.num_nodes());
   int64_t sample_total = 0;
   pvector<int64_t> samples(num_samples);
-  for (int64_t trial=0; trial < num_samples; trial++) {
+  for (int64_t trial = 0; trial < num_samples; trial++) {
     samples[trial] = g.out_degree(sp.PickNext());
     sample_total += samples[trial];
   }
   sort(samples.begin(), samples.end());
   double sample_average = static_cast<double>(sample_total) / num_samples;
-  double sample_median = samples[num_samples/2];
+  double sample_median = samples[num_samples / 2];
   return sample_average / 1.3 > sample_median;
 }
-
 
 // uses heuristic to see if worth relabeling
 size_t Hybrid(const Graph &g) {
@@ -94,11 +90,9 @@ size_t Hybrid(const Graph &g) {
     return OrderedCount(g);
 }
 
-
 void PrintTriangleStats(const Graph &g, size_t total_triangles) {
   cout << total_triangles << " triangles" << endl;
 }
-
 
 // Compares with simple serial implementation that uses std::set_intersection
 bool TCVerifier(const Graph &g, size_t test_total) {
@@ -107,23 +101,20 @@ bool TCVerifier(const Graph &g, size_t test_total) {
   intersection.reserve(g.num_nodes());
   for (NodeID u : g.vertices()) {
     for (NodeID v : g.out_neigh(u)) {
-      auto new_end = set_intersection(g.out_neigh(u).begin(),
-                                      g.out_neigh(u).end(),
-                                      g.out_neigh(v).begin(),
-                                      g.out_neigh(v).end(),
-                                      intersection.begin());
+      auto new_end = set_intersection(
+          g.out_neigh(u).begin(), g.out_neigh(u).end(), g.out_neigh(v).begin(),
+          g.out_neigh(v).end(), intersection.begin());
       intersection.resize(new_end - intersection.begin());
       total += intersection.size();
     }
   }
-  total = total / 6;  // each triangle was counted 6 times
+  total = total / 6; // each triangle was counted 6 times
   if (total != test_total)
     cout << total << " != " << test_total << endl;
   return total == test_total;
 }
 
-
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   CLApp cli(argc, argv, "triangle count");
   if (!cli.ParseArgs())
     return -1;

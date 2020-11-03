@@ -12,7 +12,7 @@
 
 using namespace std;
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
   CLConvert cli(argc, argv, "converter");
   cli.ParseArgs();
   if (cli.out_weighted()) {
