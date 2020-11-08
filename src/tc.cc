@@ -68,7 +68,7 @@ bool WorthRelabelling(const Graph &g) {
   int64_t average_degree = g.num_edges() / g.num_nodes();
   if (average_degree < 10)
     return false;
-  SourcePicker<Graph> sp(g);
+  SourcePicker<Graph> sp(g, std::vector<NodeID>());
   int64_t num_samples = min(int64_t(1000), g.num_nodes());
   int64_t sample_total = 0;
   pvector<int64_t> samples(num_samples);

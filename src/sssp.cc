@@ -192,11 +192,12 @@ int main(int argc, char *argv[]) {
     return -1;
   WeightedBuilder b(cli);
   WGraph g = b.MakeGraph();
-  SourcePicker<WGraph> sp(g, cli.start_vertex());
+  std::vector<NodeID> given_sources = {static_cast<NodeID>(cli.start_vertex())};
+  SourcePicker<WGraph> sp(g, given_sources);
   auto SSSPBound = [&sp, &cli](const WGraph &g) {
     return DeltaStep(g, sp.PickNext(), cli.delta());
   };
-  SourcePicker<WGraph> vsp(g, cli.start_vertex());
+  SourcePicker<WGraph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const WGraph &g, const pvector<WeightT> &dist) {
     return SSSPVerifier(g, vsp.PickNext(), dist);
   };

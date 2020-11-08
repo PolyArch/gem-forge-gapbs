@@ -42,13 +42,18 @@ typedef WriterBase<NodeID, WNode> WeightedWriter;
 // Used to pick random non-zero degree starting points for search algorithms
 template <typename GraphT_> class SourcePicker {
 public:
-  explicit SourcePicker(const GraphT_ &g, NodeID given_source = -1)
-      : given_source(given_source), rng(kRandSeed), udist(0, g.num_nodes() - 1),
-        g_(g) {}
+  explicit SourcePicker(const GraphT_ &g,
+                        const std::vector<NodeID> &_given_sources)
+      : given_sources(_given_sources), current_given_source_idx(0),
+        rng(kRandSeed), udist(0, g.num_nodes() - 1), g_(g) {}
 
   NodeID PickNext() {
-    if (given_source != -1)
-      return given_source;
+    if (!given_sources.empty() && given_sources.front() != -1) {
+      if (current_given_source_idx == given_sources.size()) {
+        current_given_source_idx = 0;
+      }
+      return given_sources.at(current_given_source_idx++);
+    }
     NodeID source;
     do {
       source = udist(rng);
@@ -57,7 +62,8 @@ public:
   }
 
 private:
-  NodeID given_source;
+  std::vector<NodeID> given_sources;
+  std::size_t current_given_source_idx;
   std::mt19937 rng;
   std::uniform_int_distribution<NodeID> udist;
   const GraphT_ &g_;

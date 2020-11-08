@@ -239,9 +239,10 @@ int main(int argc, char *argv[]) {
     return -1;
   Builder b(cli);
   Graph g = b.MakeGraph();
-  SourcePicker<Graph> sp(g, cli.start_vertex());
+  std::vector<NodeID> given_sources = {static_cast<NodeID>(cli.start_vertex())};
+  SourcePicker<Graph> sp(g, given_sources);
   auto BFSBound = [&sp](const Graph &g) { return DOBFS(g, sp.PickNext()); };
-  SourcePicker<Graph> vsp(g, cli.start_vertex());
+  SourcePicker<Graph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const Graph &g, const pvector<NodeID> &parent) {
     return BFSVerifier(g, vsp.PickNext(), parent);
   };

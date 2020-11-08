@@ -118,9 +118,10 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
       for (auto it = depth_index[d]; it < depth_index[d + 1]; it++) {
         NodeID u = *it;
         ScoreT delta_u = 0;
+        CountT path_counts_u = path_counts[u];
         for (NodeID &v : g.out_neigh(u)) {
           if (succ.get_bit(&v - g_out_start)) {
-            delta_u += (path_counts[u] / path_counts[v]) * (1 + deltas[v]);
+            delta_u += (path_counts_u / path_counts[v]) * (1 + deltas[v]);
           }
         }
         deltas[u] = delta_u;
@@ -227,11 +228,12 @@ int main(int argc, char *argv[]) {
     cout << "Warning: iterating from same source (-r & -i)" << endl;
   Builder b(cli);
   Graph g = b.MakeGraph();
-  SourcePicker<Graph> sp(g, cli.start_vertex());
+  std::vector<NodeID> given_sources = {static_cast<NodeID>(cli.start_vertex())};
+  SourcePicker<Graph> sp(g, given_sources);
   auto BCBound = [&sp, &cli](const Graph &g) {
     return Brandes(g, sp, cli.num_iters());
   };
-  SourcePicker<Graph> vsp(g, cli.start_vertex());
+  SourcePicker<Graph> vsp(g, given_sources);
   auto VerifierBound = [&vsp, &cli](const Graph &g,
                                     const pvector<ScoreT> &scores) {
     return BCVerifier(g, vsp, cli.num_iters(), scores);
