@@ -247,7 +247,7 @@ public:
     get_args_ += "e:b:w";
     AddHelpLine('b', "file", "output serialized graph to file");
     AddHelpLine('e', "file", "output edge list to file");
-    AddHelpLine('w', "file", "make output weighted");
+    AddHelpLine('w', "", "make output weighted");
   }
 
   void HandleArg(signed char opt, char *opt_arg) override {

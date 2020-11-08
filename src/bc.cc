@@ -13,6 +13,7 @@
 #include "platform_atomics.h"
 #include "pvector.h"
 #include "sliding_queue.h"
+#include "source_generator.h"
 #include "timer.h"
 #include "util.h"
 
@@ -228,7 +229,14 @@ int main(int argc, char *argv[]) {
     cout << "Warning: iterating from same source (-r & -i)" << endl;
   Builder b(cli);
   Graph g = b.MakeGraph();
-  std::vector<NodeID> given_sources = {static_cast<NodeID>(cli.start_vertex())};
+  std::vector<NodeID> given_sources;
+  if (cli.start_vertex() != -1) {
+    // CLI has higher priority.
+    given_sources.push_back(cli.start_vertex());
+  } else {
+    // Try to get the source from file.
+    given_sources = SourceGenerator<Graph>::loadSource(cli.filename());
+  }
   SourcePicker<Graph> sp(g, given_sources);
   auto BCBound = [&sp, &cli](const Graph &g) {
     return Brandes(g, sp, cli.num_iters());

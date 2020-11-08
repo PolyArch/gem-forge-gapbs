@@ -8,6 +8,7 @@
 #include "command_line.h"
 #include "graph.h"
 #include "reader.h"
+#include "source_generator.h"
 #include "writer.h"
 
 using namespace std;
@@ -21,12 +22,16 @@ int main(int argc, char *argv[]) {
     wg.PrintStats();
     WeightedWriter ww(wg);
     ww.WriteGraph(cli.out_filename(), cli.out_sg());
+    SourceGenerator<WGraph> sg(wg);
+    sg.writeToFile(cli.out_filename());
   } else {
     Builder b(cli);
     Graph g = b.MakeGraph();
     g.PrintStats();
     Writer w(g);
     w.WriteGraph(cli.out_filename(), cli.out_sg());
+    SourceGenerator<Graph> sg(g);
+    sg.writeToFile(cli.out_filename());
   }
   return 0;
 }

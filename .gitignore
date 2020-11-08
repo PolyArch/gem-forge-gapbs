@@ -1,6 +1,7 @@
 bc
 bfs
 cc
+cc_sv
 converter
 pr
 sssp
@@ -12,3 +13,4 @@ benchmark/out/*.out
 benchmark/graphs/*.sg
 benchmark/graphs/*.wsg
 benchmark/graphs/raw/*
+benchmark/graphs/*
