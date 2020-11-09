@@ -5,11 +5,17 @@
 #include <iostream>
 #include <vector>
 
+#include <omp.h>
+
 #include "benchmark.h"
 #include "builder.h"
 #include "command_line.h"
 #include "graph.h"
 #include "pvector.h"
+
+#ifdef GEM_FORGE
+#include "gem5/m5ops.h"
+#endif
 
 /*
 GAP Benchmark Suite
@@ -35,7 +41,18 @@ pvector<ScoreT> PageRankPull(const Graph &g, int max_iters,
   const ScoreT base_score = (1.0f - kDamp) / g.num_nodes();
   pvector<ScoreT> scores(g.num_nodes(), init_score);
   pvector<ScoreT> outgoing_contrib(g.num_nodes());
+
+#ifdef GEM_FORGE
+  m5_detail_sim_start();
+  m5_reset_stats(0, 0);
+#endif
+
   for (int iter = 0; iter < max_iters; iter++) {
+
+#ifdef GEM_FORGE
+    m5_work_begin(0, 0);
+#endif
+
     double error = 0;
 #pragma omp parallel for
     for (NodeID n = 0; n < g.num_nodes(); n++)
@@ -50,9 +67,20 @@ pvector<ScoreT> PageRankPull(const Graph &g, int max_iters,
       error += fabs(scores[u] - old_score);
     }
     printf(" %2d    %lf\n", iter, error);
+
+#ifdef GEM_FORGE
+    m5_work_end(0, 0);
+#endif
+
     if (error < epsilon)
       break;
   }
+
+#ifdef GEM_FORGE
+  m5_detail_sim_end();
+  exit(0);
+#endif
+
   return scores;
 }
 
@@ -92,6 +120,11 @@ int main(int argc, char *argv[]) {
   CLPageRank cli(argc, argv, "pagerank", 1e-4, 20);
   if (!cli.ParseArgs())
     return -1;
+
+  if (cli.num_threads() != -1) {
+    omp_set_num_threads(cli.num_threads());
+  }
+
   Builder b(cli);
   Graph g = b.MakeGraph();
   auto PRBound = [&cli](const Graph &g) {
