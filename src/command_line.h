@@ -119,14 +119,16 @@ public:
 class CLApp : public CLBase {
   bool do_analysis_ = false;
   int num_trials_ = 16;
+  int num_threads_ = -1;
   int64_t start_vertex_ = -1;
   bool do_verify_ = false;
 
 public:
   CLApp(int argc, char **argv, std::string name) : CLBase(argc, argv, name) {
-    get_args_ += "an:r:v";
+    get_args_ += "anp:r:v";
     AddHelpLine('a', "", "output analysis of last run", "false");
     AddHelpLine('n', "n", "perform n trials", std::to_string(num_trials_));
+    AddHelpLine('p', "p", "parallel p threads", std::to_string(num_threads_));
     AddHelpLine('r', "node", "start from node r", "rand");
     AddHelpLine('v', "", "verify the output of each run", "false");
   }
@@ -138,6 +140,9 @@ public:
       break;
     case 'n':
       num_trials_ = atoi(opt_arg);
+      break;
+    case 'p':
+      num_threads_ = atoi(opt_arg);
       break;
     case 'r':
       start_vertex_ = atol(opt_arg);
@@ -152,6 +157,7 @@ public:
 
   bool do_analysis() const { return do_analysis_; }
   int num_trials() const { return num_trials_; }
+  int num_threads() const { return num_threads_; }
   int64_t start_vertex() const { return start_vertex_; }
   bool do_verify() const { return do_verify_; }
 };
