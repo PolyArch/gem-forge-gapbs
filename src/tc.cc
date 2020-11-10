@@ -6,11 +6,17 @@
 #include <iostream>
 #include <vector>
 
+#include <omp.h>
+
 #include "benchmark.h"
 #include "builder.h"
 #include "command_line.h"
 #include "graph.h"
 #include "pvector.h"
+
+#ifdef GEM_FORGE
+#include "gem5/m5ops.h"
+#endif
 
 /*
 GAP Benchmark Suite
@@ -44,6 +50,13 @@ using namespace std;
 
 size_t OrderedCount(const Graph &g) {
   size_t total = 0;
+
+#ifdef GEM_FORGE
+  m5_detail_sim_start();
+  m5_reset_stats(0, 0);
+  m5_work_begin(0, 0);
+#endif
+
 #pragma omp parallel for reduction(+ : total) schedule(dynamic, 64)
   for (NodeID u = 0; u < g.num_nodes(); u++) {
     for (NodeID v : g.out_neigh(u)) {
@@ -60,6 +73,13 @@ size_t OrderedCount(const Graph &g) {
       }
     }
   }
+
+#ifdef GEM_FORGE
+  m5_work_end(0, 0);
+  m5_detail_sim_end();
+  exit(0);
+#endif
+
   return total;
 }
 
@@ -118,6 +138,11 @@ int main(int argc, char *argv[]) {
   CLApp cli(argc, argv, "triangle count");
   if (!cli.ParseArgs())
     return -1;
+
+  if (cli.num_threads() != -1) {
+    omp_set_num_threads(cli.num_threads());
+  }
+
   Builder b(cli);
   Graph g = b.MakeGraph();
   if (g.directed()) {
