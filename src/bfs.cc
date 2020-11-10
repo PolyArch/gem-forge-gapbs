@@ -4,6 +4,8 @@
 #include <iostream>
 #include <vector>
 
+#include <omp.h>
+
 #include "benchmark.h"
 #include "bitmap.h"
 #include "builder.h"
@@ -14,6 +16,10 @@
 #include "sliding_queue.h"
 #include "source_generator.h"
 #include "timer.h"
+
+#ifdef GEM_FORGE
+#include "gem5/m5ops.h"
+#endif
 
 /*
 GAP Benchmark Suite
@@ -134,6 +140,12 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
   front.reset();
   int64_t edges_to_check = g.num_edges_directed();
   int64_t scout_count = g.out_degree(source);
+
+#ifdef GEM_FORGE
+  m5_detail_sim_start();
+  m5_reset_stats(0, 0);
+#endif
+
   while (!queue.empty()) {
     if (scout_count > edges_to_check / alpha) {
       int64_t awake_count, old_awake_count;
@@ -142,26 +154,48 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
       awake_count = queue.size();
       queue.slide_window();
       do {
+#ifdef GEM_FORGE
+        m5_work_begin(0, 0);
+#else
         t.Start();
+#endif
         old_awake_count = awake_count;
         awake_count = BUStep(g, parent, front, curr);
         front.swap(curr);
+#ifdef GEM_FORGE
+        m5_work_end(0, 0);
+#else
         t.Stop();
         PrintStep("bu", t.Seconds(), awake_count);
+#endif
       } while ((awake_count >= old_awake_count) ||
                (awake_count > g.num_nodes() / beta));
       TIME_OP(t, BitmapToQueue(g, front, queue));
       PrintStep("c", t.Seconds());
       scout_count = 1;
     } else {
+#ifdef GEM_FORGE
+      m5_work_begin(1, 0);
+#else
       t.Start();
+#endif
       edges_to_check -= scout_count;
       scout_count = TDStep(g, parent, queue);
       queue.slide_window();
+#ifdef GEM_FORGE
+      m5_work_end(1, 0);
+#else
       t.Stop();
       PrintStep("td", t.Seconds(), queue.size());
+#endif
     }
   }
+
+#ifdef GEM_FORGE
+  m5_detail_sim_end();
+  exit(0);
+#endif
+
 #pragma omp parallel for
   for (NodeID n = 0; n < g.num_nodes(); n++)
     if (parent[n] < -1)
@@ -238,6 +272,11 @@ int main(int argc, char *argv[]) {
   CLApp cli(argc, argv, "breadth-first search");
   if (!cli.ParseArgs())
     return -1;
+
+  if (cli.num_threads() != -1) {
+    omp_set_num_threads(cli.num_threads());
+  }
+
   Builder b(cli);
   Graph g = b.MakeGraph();
   std::vector<NodeID> given_sources;
