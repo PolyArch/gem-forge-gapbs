@@ -7,6 +7,8 @@
 #include <queue>
 #include <vector>
 
+#include <omp.h>
+
 #include "benchmark.h"
 #include "builder.h"
 #include "command_line.h"
@@ -15,6 +17,10 @@
 #include "pvector.h"
 #include "source_generator.h"
 #include "timer.h"
+
+#ifdef GEM_FORGE
+#include "gem5/m5ops.h"
+#endif
 
 /*
 GAP Benchmark Suite
@@ -93,11 +99,21 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
   size_t frontier_tails[2] = {1, 0};
   frontier[0] = source;
   t.Start();
+
+#ifdef GEM_FORGE
+  m5_detail_sim_start();
+  m5_reset_stats(0, 0);
+#endif
+
 #pragma omp parallel
   {
     vector<vector<NodeID>> local_bins(0);
     size_t iter = 0;
     while (shared_indexes[iter & 1] != kMaxBin) {
+#ifdef GEM_FORGE
+#pragma omp single nowait
+      m5_work_begin(0, 0);
+#endif
       size_t &curr_bin_index = shared_indexes[iter & 1];
       size_t &next_bin_index = shared_indexes[(iter + 1) & 1];
       size_t &curr_frontier_tail = frontier_tails[iter & 1];
@@ -141,10 +157,18 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
       }
       iter++;
 #pragma omp barrier
+#ifdef GEM_FORGE
+#pragma omp single nowait
+      m5_work_end(0, 0);
+#endif
     }
 #pragma omp single
     cout << "took " << iter << " iterations" << endl;
   }
+#ifdef GEM_FORGE
+  m5_detail_sim_end();
+  exit(0);
+#endif
   return dist;
 }
 
@@ -191,6 +215,11 @@ int main(int argc, char *argv[]) {
   CLDelta<WeightT> cli(argc, argv, "single-source shortest-path");
   if (!cli.ParseArgs())
     return -1;
+
+  if (cli.num_threads() != -1) {
+    omp_set_num_threads(cli.num_threads());
+  }
+
   WeightedBuilder b(cli);
   WGraph g = b.MakeGraph();
   std::vector<NodeID> given_sources;
