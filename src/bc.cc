@@ -5,6 +5,8 @@
 #include <iostream>
 #include <vector>
 
+#include <omp.h>
+
 #include "benchmark.h"
 #include "bitmap.h"
 #include "builder.h"
@@ -16,6 +18,10 @@
 #include "source_generator.h"
 #include "timer.h"
 #include "util.h"
+
+#ifdef GEM_FORGE
+#include "gem5/m5ops.h"
+#endif
 
 /*
 GAP Benchmark Suite
@@ -101,6 +107,12 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
   t.Stop();
   PrintStep("a", t.Seconds());
   const NodeID *g_out_start = g.out_neigh(0).begin();
+
+#ifdef GEM_FORGE
+  m5_detail_sim_start();
+  m5_reset_stats(0, 0);
+#endif
+
   for (NodeID iter = 0; iter < num_iters; iter++) {
     NodeID source = sp.PickNext();
     cout << "source: " << source << endl;
@@ -109,12 +121,25 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
     depth_index.resize(0);
     queue.reset();
     succ.reset();
+
+#ifdef GEM_FORGE
+    m5_work_begin(0, 0);
+#endif
+
     PBFS(g, source, path_counts, succ, depth_index, queue);
+
+#ifdef GEM_FORGE
+    m5_work_end(0, 0);
+#endif
+
     t.Stop();
     PrintStep("b", t.Seconds());
     pvector<ScoreT> deltas(g.num_nodes(), 0);
     t.Start();
     for (int d = depth_index.size() - 2; d >= 0; d--) {
+#ifdef GEM_FORGE
+      m5_work_begin(1, 0);
+#endif
 #pragma omp parallel for schedule(dynamic, 64)
       for (auto it = depth_index[d]; it < depth_index[d + 1]; it++) {
         NodeID u = *it;
@@ -128,6 +153,9 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
         deltas[u] = delta_u;
         scores[u] += delta_u;
       }
+#ifdef GEM_FORGE
+      m5_work_end(1, 0);
+#endif
     }
     t.Stop();
     PrintStep("p", t.Seconds());
@@ -140,6 +168,12 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
 #pragma omp parallel for
   for (NodeID n = 0; n < g.num_nodes(); n++)
     scores[n] = scores[n] / biggest_score;
+
+#ifdef GEM_FORGE
+  m5_detail_sim_end();
+  exit(0);
+#endif
+
   return scores;
 }
 
@@ -225,6 +259,11 @@ int main(int argc, char *argv[]) {
   CLIterApp cli(argc, argv, "betweenness-centrality", 1);
   if (!cli.ParseArgs())
     return -1;
+
+  if (cli.num_threads() != -1) {
+    omp_set_num_threads(cli.num_threads());
+  }
+
   if (cli.num_iters() > 1 && cli.start_vertex() != -1)
     cout << "Warning: iterating from same source (-r & -i)" << endl;
   Builder b(cli);
