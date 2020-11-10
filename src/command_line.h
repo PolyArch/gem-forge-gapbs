@@ -125,7 +125,7 @@ class CLApp : public CLBase {
 
 public:
   CLApp(int argc, char **argv, std::string name) : CLBase(argc, argv, name) {
-    get_args_ += "anp:r:v";
+    get_args_ += "an:p:r:v";
     AddHelpLine('a', "", "output analysis of last run", "false");
     AddHelpLine('n', "n", "perform n trials", std::to_string(num_trials_));
     AddHelpLine('p', "p", "parallel p threads", std::to_string(num_threads_));
