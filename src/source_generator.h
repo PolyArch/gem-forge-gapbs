@@ -36,9 +36,7 @@ private:
   const GraphT_ &g_;
   NodeID pickedSource;
 
-  static constexpr std::string src_suffix() {
-      return ".src.txt";
-  }
+  static constexpr const char *src_suffix() { return ".src.txt"; }
 
   NodeID pickSource() {
 
