@@ -133,7 +133,7 @@ public:
 #pragma omp parallel
     {
       std::mt19937 rng;
-      std::uniform_int_distribution<int> udist(1, 255);
+      std::uniform_int_distribution<int> udist(1, 7);
       int64_t el_size = el.size();
 #pragma omp for
       for (int64_t block = 0; block < el_size; block += block_size) {
