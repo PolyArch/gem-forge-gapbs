@@ -66,9 +66,10 @@ Generation and Optimization (CGO), pages 158-170, 2020.
 
 using namespace std;
 
+using BinIndexT = uint32_t;
 const WeightT kDistInf = numeric_limits<WeightT>::max() / 2;
-const size_t kMaxBin = numeric_limits<size_t>::max() / 2;
-const size_t kBinSizeThreshold = 1000;
+const BinIndexT kMaxBin = numeric_limits<BinIndexT>::max() / 2;
+const BinIndexT kBinSizeThreshold = 1000;
 
 inline void RelaxEdges(const WGraph &g, NodeID u, WeightT delta,
                        pvector<WeightT> &dist,
@@ -95,7 +96,7 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
   dist[source] = 0;
   pvector<NodeID> frontier(g.num_edges_directed());
   // two element arrays for double buffering curr=iter&1, next=(iter+1)&1
-  size_t shared_indexes[2] = {0, kMaxBin};
+  BinIndexT shared_indexes[2] = {0, kMaxBin};
   size_t frontier_tails[2] = {1, 0};
   frontier[0] = source;
   t.Start();
@@ -114,11 +115,11 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
 #pragma omp single nowait
       m5_work_begin(0, 0);
 #endif
-      size_t &curr_bin_index = shared_indexes[iter & 1];
-      size_t &next_bin_index = shared_indexes[(iter + 1) & 1];
+      BinIndexT &curr_bin_index = shared_indexes[iter & 1];
+      BinIndexT &next_bin_index = shared_indexes[(iter + 1) & 1];
       size_t &curr_frontier_tail = frontier_tails[iter & 1];
       size_t &next_frontier_tail = frontier_tails[(iter + 1) & 1];
-#pragma omp for nowait schedule(dynamic, 64)
+#pragma omp for nowait schedule(static)
       for (size_t i = 0; i < curr_frontier_tail; i++) {
         NodeID u = frontier[i];
         if (dist[u] >= delta * static_cast<WeightT>(curr_bin_index))
@@ -132,10 +133,14 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
         for (NodeID u : curr_bin_copy)
           RelaxEdges(g, u, delta, dist, local_bins);
       }
-      for (size_t i = curr_bin_index; i < local_bins.size(); i++) {
+      for (BinIndexT i = curr_bin_index; i < local_bins.size(); i++) {
         if (!local_bins[i].empty()) {
+#ifdef __clang__
+          __atomic_fetch_min(&next_bin_index, i, __ATOMIC_RELAXED);
+#else
 #pragma omp critical
           next_bin_index = min(next_bin_index, i);
+#endif
           break;
         }
       }
