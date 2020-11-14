@@ -71,6 +71,7 @@ void PBFS(const Graph &g, NodeID source, pvector<CountT> &path_counts,
 #pragma omp for schedule(dynamic, 64) nowait
       for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
         NodeID u = *q_iter;
+        CountT uPathCount = path_counts[u];
         for (NodeID &v : g.out_neigh(u)) {
           if ((depths[v] == -1) &&
               (compare_and_swap(depths[v], static_cast<NodeID>(-1), depth))) {
@@ -78,8 +79,13 @@ void PBFS(const Graph &g, NodeID source, pvector<CountT> &path_counts,
           }
           if (depths[v] == depth) {
             succ.set_bit_atomic(&v - g_out_start);
+#ifdef __clang__
+            // __atomic_fetch_fadd() is added in GEM_FORGE.
+            __atomic_fetch_fadd(&path_counts[v], uPathCount, __ATOMIC_RELAXED);
+#else
 #pragma omp atomic
-            path_counts[v] += path_counts[u];
+            path_counts[v] += uPathCount;
+#endif
           }
         }
       }
