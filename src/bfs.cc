@@ -55,7 +55,13 @@ int64_t BUStep(const Graph &g, pvector<NodeID> &parent, Bitmap &front,
 #pragma omp parallel for reduction(+ : awake_count) schedule(dynamic, 1024)
   for (NodeID u = 0; u < g.num_nodes(); u++) {
     if (parent[u] < 0) {
-      for (NodeID v : g.in_neigh(u)) {
+      // Explicit write this to avoid u + 1 and misplaced stream_step.
+      NodeID *const *in_neigh_index = g.in_neigh_index() + u;
+      const NodeID *in_neigh_begin = in_neigh_index[0];
+      const NodeID *in_neigh_end = in_neigh_index[1];
+      const auto N = in_neigh_end - in_neigh_begin;
+      for (int64_t i = 0; i < N; ++i) {
+        NodeID v = in_neigh_begin[i];
         if (front.get_bit(v)) {
           parent[u] = v;
           awake_count++;
@@ -77,7 +83,13 @@ int64_t TDStep(const Graph &g, pvector<NodeID> &parent,
 #pragma omp for reduction(+ : scout_count)
     for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
       NodeID u = *q_iter;
-      for (NodeID v : g.out_neigh(u)) {
+      // Explicit write this out to aviod u + 1.
+      NodeID *const *out_neigh_index = g.out_neigh_index() + u;
+      const NodeID *out_neigh_begin = out_neigh_index[0];
+      const NodeID *out_neigh_end = out_neigh_index[1];
+      const auto N = out_neigh_end - out_neigh_begin;
+      for (int64_t i = 0; i < N; ++i) {
+        NodeID v = out_neigh_begin[i];
         NodeID curr_val = parent[v];
         if (curr_val < 0) {
           if (compare_and_swap(parent[v], curr_val, u)) {

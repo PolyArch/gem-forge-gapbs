@@ -190,6 +190,13 @@ public:
     return Neighborhood(n, in_index_, start_offset);
   }
 
+  DestID_ **out_neigh_index() const { return out_index_; }
+
+  DestID_ **in_neigh_index() const {
+    static_assert(MakeInverse, "Graph inversion disabled but reading inverse");
+    return in_index_;
+  }
+
   void PrintStats() const {
     std::cout << "Graph has " << num_nodes_ << " nodes and " << num_edges_
               << " ";

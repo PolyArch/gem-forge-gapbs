@@ -71,22 +71,46 @@ const WeightT kDistInf = numeric_limits<WeightT>::max() / 2;
 const BinIndexT kMaxBin = numeric_limits<BinIndexT>::max() / 2;
 const BinIndexT kBinSizeThreshold = 1000;
 
-inline void RelaxEdges(const WGraph &g, NodeID u, WeightT delta,
-                       pvector<WeightT> &dist,
-                       vector<vector<NodeID>> &local_bins) {
-  for (WNode wn : g.out_neigh(u)) {
-    WeightT old_dist = dist[wn.v];
-    WeightT new_dist = dist[u] + wn.w;
+__attribute__((noinline)) void RelaxEdges(const WGraph &g, NodeID u,
+                                          WeightT delta, pvector<WeightT> &dist,
+                                          vector<vector<NodeID>> &local_bins) {
+  /**
+   * Zhengrong: Rewrite using iterators to introduce IV.
+   * Avoid the fake pointer chasing pattern in original IR.
+   */
+  WeightT dist_u = dist[u];
+  auto out_neighbor = g.out_neigh(u);
+  const WNode *out_begin = out_neighbor.begin();
+  const WNode *out_end = out_neighbor.end();
+  const auto N = out_end - out_begin;
+  for (int64_t i = 0; i < N; ++i) {
+    const WNode &wn = out_begin[i];
+    const WeightT weight = wn.w;
+    const NodeID v = wn.v;
+    WeightT new_dist = dist_u + weight;
+#ifdef __clang__
+    // Use clang's __atomic_fetch_min.
+    WeightT old_dist =
+        __atomic_fetch_min(&dist[v], new_dist, __ATOMIC_RELAXED);
+    if (old_dist > new_dist) {
+      size_t dest_bin = new_dist / delta;
+      if (dest_bin >= local_bins.size())
+        local_bins.resize(dest_bin + 1);
+      local_bins[dest_bin].push_back(v);
+    }
+#else
+    WeightT old_dist = dist[v];
     while (new_dist < old_dist) {
-      if (compare_and_swap(dist[wn.v], old_dist, new_dist)) {
+      if (compare_and_swap(dist[v], old_dist, new_dist)) {
         size_t dest_bin = new_dist / delta;
         if (dest_bin >= local_bins.size())
           local_bins.resize(dest_bin + 1);
-        local_bins[dest_bin].push_back(wn.v);
+        local_bins[dest_bin].push_back(v);
         break;
       }
-      old_dist = dist[wn.v]; // swap failed, recheck dist update & retry
+      old_dist = dist[v]; // swap failed, recheck dist update & retry
     }
+#endif
   }
 }
 

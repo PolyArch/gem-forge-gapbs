@@ -56,7 +56,8 @@ private:
   uint64_t *end_;
 
   static const uint64_t kBitsPerWord = 64;
-  static uint64_t word_offset(size_t n) { return n / kBitsPerWord; }
+  static const uint64_t kNBitsPerWord = 6;
+  static uint64_t word_offset(size_t n) { return n >> kNBitsPerWord; }
   static uint64_t bit_offset(size_t n) { return n & (kBitsPerWord - 1); }
 };
 
