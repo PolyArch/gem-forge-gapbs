@@ -62,14 +62,33 @@ size_t OrderedCount(const Graph &g) {
     for (NodeID v : g.out_neigh(u)) {
       if (v > u)
         break;
-      auto it = g.out_neigh(u).begin();
-      for (NodeID w : g.out_neigh(v)) {
-        if (w > v)
+      // auto it = g.out_neigh(u).begin();
+      // for (NodeID w : g.out_neigh(v)) {
+      //   if (w > v)
+      //     break;
+      //   while (*it < w)
+      //     it++;
+      //   if (w == *it)
+      //     total++;
+      // }
+      auto uit = g.out_neigh(u).begin();
+      auto ued = g.out_neigh(u).end();
+      auto vit = g.out_neigh(v).begin();
+      auto ved = g.out_neigh(v).end();
+      while (uit < ued && vit < ved) {
+        auto uw = *uit;
+        auto vw = *vit;
+        if (vw > v) {
           break;
-        while (*it < w)
-          it++;
-        if (w == *it)
+        }
+        if (uw == vw) {
           total++;
+          uit++;
+          vit++;
+        } else if (uw < vw)
+          uit++;
+        else
+          vit++;
       }
     }
   }

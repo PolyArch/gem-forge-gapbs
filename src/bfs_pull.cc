@@ -74,40 +74,6 @@ int64_t BUStep(const Graph &g, pvector<NodeID> &parent, Bitmap &front,
   return awake_count;
 }
 
-int64_t TDStep(const Graph &g, pvector<NodeID> &parent,
-               SlidingQueue<NodeID> &queue) {
-  auto parent_v = parent.data();
-  auto queue_v = queue.begin();
-  auto queue_e = queue.end();
-  int64_t scout_count = 0;
-#pragma omp parallel firstprivate(queue_v, queue_e, parent_v)
-  {
-    QueueBuffer<NodeID> lqueue(queue);
-    NodeID **graph_out_neigh_index = g.out_neigh_index();
-#pragma omp for reduction(+ : scout_count)
-    for (auto iter = queue_v; iter < queue_e; iter++) {
-      NodeID u = *iter;
-      // Explicit write this out to aviod u + 1.
-      NodeID *const *out_neigh_index = g.out_neigh_index() + u;
-      const NodeID *out_neigh_begin = out_neigh_index[0];
-      const NodeID *out_neigh_end = out_neigh_index[1];
-      const auto N = out_neigh_end - out_neigh_begin;
-      for (int64_t i = 0; i < N; ++i) {
-        NodeID v = out_neigh_begin[i];
-        NodeID curr_val = parent[v];
-        if (curr_val < 0) {
-          if (compare_and_swap(parent[v], curr_val, u)) {
-            lqueue.push_back(v);
-            scout_count += -curr_val;
-          }
-        }
-      }
-    }
-    lqueue.flush();
-  }
-  return scout_count;
-}
-
 void QueueToBitmap(const SlidingQueue<NodeID> &queue, Bitmap &bm) {
 #pragma omp parallel for
   for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
@@ -154,8 +120,6 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
   curr.reset();
   Bitmap front(g.num_nodes());
   front.reset();
-  int64_t edges_to_check = g.num_edges_directed();
-  int64_t scout_count = g.out_degree(source);
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
@@ -163,48 +127,27 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
 #endif
 
   while (!queue.empty()) {
-    if (scout_count > edges_to_check / alpha) {
-      int64_t awake_count, old_awake_count;
-      TIME_OP(t, QueueToBitmap(queue, front));
-      PrintStep("e", t.Seconds());
-      awake_count = queue.size();
-      queue.slide_window();
-      do {
+    TIME_OP(t, QueueToBitmap(queue, front));
+    PrintStep("e", t.Seconds());
+    int64_t awake_count = queue.size();
+    queue.slide_window();
+    do {
 #ifdef GEM_FORGE
-        m5_work_begin(0, 0);
-#else
-        t.Start();
-#endif
-        old_awake_count = awake_count;
-        awake_count = BUStep(g, parent, front, curr);
-        front.swap(curr);
-#ifdef GEM_FORGE
-        m5_work_end(0, 0);
-#else
-        t.Stop();
-        PrintStep("bu", t.Seconds(), awake_count);
-#endif
-      } while ((awake_count >= old_awake_count) ||
-               (awake_count > g.num_nodes() / beta));
-      TIME_OP(t, BitmapToQueue(g, front, queue));
-      PrintStep("c", t.Seconds());
-      scout_count = 1;
-    } else {
-#ifdef GEM_FORGE
-      m5_work_begin(1, 0);
+      m5_work_begin(0, 0);
 #else
       t.Start();
 #endif
-      edges_to_check -= scout_count;
-      scout_count = TDStep(g, parent, queue);
-      queue.slide_window();
+      awake_count = BUStep(g, parent, front, curr);
+      front.swap(curr);
 #ifdef GEM_FORGE
-      m5_work_end(1, 0);
+      m5_work_end(0, 0);
 #else
       t.Stop();
-      PrintStep("td", t.Seconds(), queue.size());
+      PrintStep("bu", t.Seconds(), awake_count);
 #endif
-    }
+    } while (awake_count > 0);
+    TIME_OP(t, BitmapToQueue(g, front, queue));
+    PrintStep("c", t.Seconds());
   }
 
 #ifdef GEM_FORGE

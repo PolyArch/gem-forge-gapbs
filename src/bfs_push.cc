@@ -48,93 +48,44 @@ them in parent array as negative numbers. Thus the encoding of parent is:
 
 using namespace std;
 
-int64_t BUStep(const Graph &g, pvector<NodeID> &parent, Bitmap &front,
-               Bitmap &next) {
-  int64_t awake_count = 0;
-  next.reset();
-#pragma omp parallel for reduction(+ : awake_count) schedule(dynamic, 1024)
-  for (NodeID u = 0; u < g.num_nodes(); u++) {
-    if (parent[u] < 0) {
-      // Explicit write this to avoid u + 1 and misplaced stream_step.
-      NodeID *const *in_neigh_index = g.in_neigh_index() + u;
-      const NodeID *in_neigh_begin = in_neigh_index[0];
-      const NodeID *in_neigh_end = in_neigh_index[1];
-      const auto N = in_neigh_end - in_neigh_begin;
-      for (int64_t i = 0; i < N; ++i) {
-        NodeID v = in_neigh_begin[i];
-        if (front.get_bit(v)) {
-          parent[u] = v;
-          awake_count++;
-          next.set_bit(u);
-          break;
-        }
-      }
-    }
-  }
-  return awake_count;
-}
+const NodeID InitParentId = -1;
 
-int64_t TDStep(const Graph &g, pvector<NodeID> &parent,
-               SlidingQueue<NodeID> &queue) {
+void TDStep(const Graph &g, pvector<NodeID> &parent,
+            SlidingQueue<NodeID> &queue) {
   auto parent_v = parent.data();
   auto queue_v = queue.begin();
   auto queue_e = queue.end();
-  int64_t scout_count = 0;
 #pragma omp parallel firstprivate(queue_v, queue_e, parent_v)
   {
     QueueBuffer<NodeID> lqueue(queue);
     NodeID **graph_out_neigh_index = g.out_neigh_index();
-#pragma omp for reduction(+ : scout_count)
+#pragma omp for schedule(static)
     for (auto iter = queue_v; iter < queue_e; iter++) {
       NodeID u = *iter;
       // Explicit write this out to aviod u + 1.
-      NodeID *const *out_neigh_index = g.out_neigh_index() + u;
+      NodeID *const *out_neigh_index = graph_out_neigh_index + u;
       const NodeID *out_neigh_begin = out_neigh_index[0];
       const NodeID *out_neigh_end = out_neigh_index[1];
       const auto N = out_neigh_end - out_neigh_begin;
-      for (int64_t i = 0; i < N; ++i) {
-        NodeID v = out_neigh_begin[i];
-        NodeID curr_val = parent[v];
-        if (curr_val < 0) {
-          if (compare_and_swap(parent[v], curr_val, u)) {
-            lqueue.push_back(v);
-            scout_count += -curr_val;
-          }
+      for (int64_t j = 0; j < N; ++j) {
+        NodeID v = out_neigh_begin[j];
+        bool swapped = compare_and_swap(parent_v[v], InitParentId, u);
+        if (swapped) {
+          lqueue.push_back(v);
         }
       }
     }
     lqueue.flush();
   }
-  return scout_count;
-}
-
-void QueueToBitmap(const SlidingQueue<NodeID> &queue, Bitmap &bm) {
-#pragma omp parallel for
-  for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
-    NodeID u = *q_iter;
-    bm.set_bit_atomic(u);
-  }
-}
-
-void BitmapToQueue(const Graph &g, const Bitmap &bm,
-                   SlidingQueue<NodeID> &queue) {
-#pragma omp parallel
-  {
-    QueueBuffer<NodeID> lqueue(queue);
-#pragma omp for
-    for (NodeID n = 0; n < g.num_nodes(); n++)
-      if (bm.get_bit(n))
-        lqueue.push_back(n);
-    lqueue.flush();
-  }
-  queue.slide_window();
+  return;
 }
 
 pvector<NodeID> InitParent(const Graph &g) {
   pvector<NodeID> parent(g.num_nodes());
 #pragma omp parallel for
-  for (NodeID n = 0; n < g.num_nodes(); n++)
-    parent[n] = g.out_degree(n) != 0 ? -g.out_degree(n) : -1;
+  for (NodeID n = 0; n < g.num_nodes(); n++) {
+    parent[n] = -1;
+  }
   return parent;
 }
 
@@ -154,57 +105,44 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
   curr.reset();
   Bitmap front(g.num_nodes());
   front.reset();
-  int64_t edges_to_check = g.num_edges_directed();
-  int64_t scout_count = g.out_degree(source);
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
+#ifdef GEM_FORGE_WARM_CACHE
+  {
+    NodeID **out_neigh_index = g.out_neigh_index();
+    NodeID *out_edges = g.out_edges();
+    NodeID *parent_data = parent.data();
+#pragma omp parallel for firstprivate(out_neigh_index)
+    for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(*out_neigh_index)) {
+      __attribute__((unused)) volatile NodeID *out_neigh = out_neigh_index[n];
+      __attribute__((unused)) volatile NodeID parent = parent_data[n];
+    }
+#pragma omp parallel for firstprivate(out_edges)
+    for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(NodeID)) {
+      // We also warm up the out edge list.
+      __attribute__((unused)) volatile NodeID edge = out_edges[e];
+    }
+  }
+  std::cout << "Warm up done.\n";
+#endif
   m5_reset_stats(0, 0);
 #endif
 
   while (!queue.empty()) {
-    if (scout_count > edges_to_check / alpha) {
-      int64_t awake_count, old_awake_count;
-      TIME_OP(t, QueueToBitmap(queue, front));
-      PrintStep("e", t.Seconds());
-      awake_count = queue.size();
-      queue.slide_window();
-      do {
 #ifdef GEM_FORGE
-        m5_work_begin(0, 0);
+    m5_work_begin(0, 0);
 #else
-        t.Start();
+    t.Start();
 #endif
-        old_awake_count = awake_count;
-        awake_count = BUStep(g, parent, front, curr);
-        front.swap(curr);
+    TDStep(g, parent, queue);
+    queue.slide_window();
 #ifdef GEM_FORGE
-        m5_work_end(0, 0);
+    m5_work_end(0, 0);
 #else
-        t.Stop();
-        PrintStep("bu", t.Seconds(), awake_count);
+    t.Stop();
+    PrintStep("td", t.Seconds(), queue.size());
 #endif
-      } while ((awake_count >= old_awake_count) ||
-               (awake_count > g.num_nodes() / beta));
-      TIME_OP(t, BitmapToQueue(g, front, queue));
-      PrintStep("c", t.Seconds());
-      scout_count = 1;
-    } else {
-#ifdef GEM_FORGE
-      m5_work_begin(1, 0);
-#else
-      t.Start();
-#endif
-      edges_to_check -= scout_count;
-      scout_count = TDStep(g, parent, queue);
-      queue.slide_window();
-#ifdef GEM_FORGE
-      m5_work_end(1, 0);
-#else
-      t.Stop();
-      PrintStep("td", t.Seconds(), queue.size());
-#endif
-    }
   }
 
 #ifdef GEM_FORGE

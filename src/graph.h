@@ -197,6 +197,12 @@ public:
     return in_index_;
   }
 
+  DestID_ *out_edges() const { return out_neighbors_; }
+  DestID_ *in_edges() const {
+    static_assert(MakeInverse, "Graph inversion disabled but reading inverse");
+    return in_neighbors_;
+  }
+
   void PrintStats() const {
     std::cout << "Graph has " << num_nodes_ << " nodes and " << num_edges_
               << " ";
