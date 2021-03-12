@@ -1,6 +1,7 @@
 // Copyright (c) 2015, The Regents of the University of California (Regents)
 // See LICENSE.txt for license details
 
+#include <cassert>
 #include <cinttypes>
 #include <iostream>
 #include <limits>
@@ -15,6 +16,7 @@
 #include "graph.h"
 #include "platform_atomics.h"
 #include "pvector.h"
+#include "sized_array.h"
 #include "source_generator.h"
 #include "timer.h"
 
@@ -69,42 +71,46 @@ using namespace std;
 using BinIndexT = uint32_t;
 const WeightT kDistInf = numeric_limits<WeightT>::max() / 2;
 const BinIndexT kMaxBin = numeric_limits<BinIndexT>::max() / 2;
-const BinIndexT kBinSizeThreshold = 1000;
+// const BinIndexT kBinSizeThreshold = 1000;
+/**
+ * Zhengrong: We simply set a maximum number of bins, and a maximum
+ * number of vertexes in the bins.
+ */
+const BinIndexT kMaxNumBin = 100;
+using BinT = SizedArray<NodeID>;
 
 __attribute__((noinline)) void RelaxEdges(const WGraph &g, NodeID u,
-                                          WeightT delta, pvector<WeightT> &dist,
-                                          vector<vector<NodeID>> &local_bins) {
+                                          WeightT dist_u, WeightT delta,
+                                          pvector<WeightT> &dist,
+                                          vector<BinT> &local_bins) {
   /**
    * Zhengrong: Rewrite using iterators to introduce IV.
    * Avoid the fake pointer chasing pattern in original IR.
    */
-  WeightT dist_u = dist[u];
+  WeightT *dist_data = dist.data();
   auto out_neighbor = g.out_neigh(u);
   const WNode *out_begin = out_neighbor.begin();
   const WNode *out_end = out_neighbor.end();
-  const auto N = out_end - out_begin;
+  const int64_t N = out_end - out_begin;
   for (int64_t i = 0; i < N; ++i) {
     const WNode &wn = out_begin[i];
     const WeightT weight = wn.w;
     const NodeID v = wn.v;
     WeightT new_dist = dist_u + weight;
-#ifdef __clang__
     // Use clang's __atomic_fetch_min.
     WeightT old_dist =
-        __atomic_fetch_min(&dist[v], new_dist, __ATOMIC_RELAXED);
+        __atomic_fetch_min(&dist_data[v], new_dist, __ATOMIC_RELAXED);
     if (old_dist > new_dist) {
       size_t dest_bin = new_dist / delta;
-      if (dest_bin >= local_bins.size())
-        local_bins.resize(dest_bin + 1);
+      assert(dest_bin < local_bins.size());
       local_bins[dest_bin].push_back(v);
     }
-#else
+#if 0
     WeightT old_dist = dist[v];
     while (new_dist < old_dist) {
       if (compare_and_swap(dist[v], old_dist, new_dist)) {
         size_t dest_bin = new_dist / delta;
-        if (dest_bin >= local_bins.size())
-          local_bins.resize(dest_bin + 1);
+        assert(dest_bin < local_bins.size());
         local_bins[dest_bin].push_back(v);
         break;
       }
@@ -127,12 +133,34 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
+#ifdef GEM_FORGE_WARM_CACHE
+  {
+    WNode **out_neigh_index = g.out_neigh_index();
+    WNode *out_edges = g.out_edges();
+    WeightT *dist_data = dist.data();
+#pragma omp parallel for firstprivate(out_neigh_index)
+    for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(*out_neigh_index)) {
+      __attribute__((unused)) volatile WNode *out_neigh = out_neigh_index[n];
+      __attribute__((unused)) volatile WeightT dist = dist_data[n];
+    }
+#pragma omp parallel for firstprivate(out_edges)
+    for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(WNode)) {
+      // We also warm up the out edge list.
+      __attribute__((unused)) volatile WNode edge = out_edges[e];
+    }
+  }
+  std::cout << "Warm up done.\n";
+#endif
   m5_reset_stats(0, 0);
 #endif
 
 #pragma omp parallel
   {
-    vector<vector<NodeID>> local_bins(0);
+    vector<BinT> local_bins;
+    local_bins.reserve(kMaxNumBin);
+    for (int i = 0; i < kMaxNumBin; ++i) {
+      local_bins.emplace_back(g.num_edges_directed());
+    }
     size_t iter = 0;
     while (shared_indexes[iter & 1] != kMaxBin) {
 #ifdef GEM_FORGE
@@ -146,9 +174,15 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
 #pragma omp for nowait schedule(static)
       for (size_t i = 0; i < curr_frontier_tail; i++) {
         NodeID u = frontier[i];
-        if (dist[u] >= delta * static_cast<WeightT>(curr_bin_index))
-          RelaxEdges(g, u, delta, dist, local_bins);
+        WeightT dist_u = dist[u];
+        if (dist_u >= delta * static_cast<WeightT>(curr_bin_index)) {
+          RelaxEdges(g, u, dist_u, delta, dist, local_bins);
+        }
       }
+/**
+ * From our testing, this seems not critical. Disable for now.
+ */
+#if 0
       while (curr_bin_index < local_bins.size() &&
              !local_bins[curr_bin_index].empty() &&
              local_bins[curr_bin_index].size() < kBinSizeThreshold) {
@@ -157,6 +191,7 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
         for (NodeID u : curr_bin_copy)
           RelaxEdges(g, u, delta, dist, local_bins);
       }
+#endif
       for (BinIndexT i = curr_bin_index; i < local_bins.size(); i++) {
         if (!local_bins[i].empty()) {
 #ifdef __clang__

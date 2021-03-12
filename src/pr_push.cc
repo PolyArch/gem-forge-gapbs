@@ -96,6 +96,11 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters,
     m5_work_end(0, 0);
     m5_work_begin(1, 0);
 #endif
+    // // Testing purpose.
+    // for (NodeID n = 0; n < g.num_nodes(); n++) {
+    //   printf(" - Iter %d-1 %d Score %f NextScore %f.\n", iter, n,
+    //          scores_data[n], next_scores_data[n]);
+    // }
 
     float error = 0;
 #ifndef DISABLE_KERNEL2
@@ -109,6 +114,11 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters,
       next_scores_data[n] = 0;
     }
 #endif
+    // // Testing purpose.
+    // for (NodeID n = 0; n < g.num_nodes(); n++) {
+    //   printf(" - Iter %d-2 %d Score %f NextScore %f.\n", iter, n,
+    //          scores_data[n], next_scores_data[n]);
+    // }
 
     printf(" %2d    %f\n", iter, error);
 

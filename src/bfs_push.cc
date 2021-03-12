@@ -13,6 +13,7 @@
 #include "graph.h"
 #include "platform_atomics.h"
 #include "pvector.h"
+#include "sized_array.h"
 #include "sliding_queue.h"
 #include "source_generator.h"
 #include "timer.h"
@@ -55,13 +56,27 @@ void TDStep(const Graph &g, pvector<NodeID> &parent,
   auto parent_v = parent.data();
   auto queue_v = queue.begin();
   auto queue_e = queue.end();
-#pragma omp parallel firstprivate(queue_v, queue_e, parent_v)
+  int64_t queue_size = queue_e - queue_v;
+  /**
+   * Helper function for debug perpose.
+   */
+  // {
+  //   static int iter = 0;
+  //   uint64_t totalIdx = 0;
+  //   for (auto iter = queue_v; iter < queue_e; iter++) {
+  //     NodeID u = *iter;
+  //     totalIdx += u;
+  //   }
+  //   printf(" - TD %d Size %ld Total %lu.\n", iter, queue_e - queue_v, totalIdx);
+  //   iter++;
+  // }
+#pragma omp parallel firstprivate(queue_v, queue_size, parent_v)
   {
-    QueueBuffer<NodeID> lqueue(queue);
+    SizedArray<NodeID> lqueue(g.num_nodes());
     NodeID **graph_out_neigh_index = g.out_neigh_index();
 #pragma omp for schedule(static)
-    for (auto iter = queue_v; iter < queue_e; iter++) {
-      NodeID u = *iter;
+    for (int64_t i = 0; i < queue_size; ++i) {
+      NodeID u = queue_v[i];
       // Explicit write this out to aviod u + 1.
       NodeID *const *out_neigh_index = graph_out_neigh_index + u;
       const NodeID *out_neigh_begin = out_neigh_index[0];
@@ -75,8 +90,10 @@ void TDStep(const Graph &g, pvector<NodeID> &parent,
         }
       }
     }
-    lqueue.flush();
+    // Flush into the global queue.
+    queue.append(lqueue.begin(), lqueue.size());
   }
+
   return;
 }
 

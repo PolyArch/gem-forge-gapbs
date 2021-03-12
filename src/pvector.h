@@ -5,6 +5,7 @@
 #define PVECTOR_H_
 
 #include <algorithm>
+#include <cstdlib>
 
 /*
 GAP Benchmark Suite
@@ -15,16 +16,21 @@ Vector class with ability to not initialize or do initialize in parallel
  - std::vector (when resizing) will always initialize, and does it serially
  - When pvector is resized, new elements are uninitialized
  - Resizing is not thread-safe
+
+Sean: Support aligned allocation.
 */
 
 template <typename T_> class pvector {
 public:
+  static constexpr std::size_t AlignBytes = 64;
+
   typedef T_ *iterator;
 
   pvector() : start_(nullptr), end_size_(nullptr), end_capacity_(nullptr) {}
 
   explicit pvector(size_t num_elements) {
-    start_ = new T_[num_elements];
+    start_ = reinterpret_cast<iterator>(
+        aligned_alloc(AlignBytes, sizeof(T_) * num_elements));
     end_size_ = start_ + num_elements;
     end_capacity_ = end_size_;
   }
@@ -64,19 +70,22 @@ public:
   }
 
   ~pvector() {
-    if (start_ != nullptr)
-      delete[] start_;
+    if (start_ != nullptr) {
+      free(start_);
+    }
   }
 
   // not thread-safe
   void reserve(size_t num_elements) {
     if (num_elements > capacity()) {
-      T_ *new_range = new T_[num_elements];
+      T_ *new_range = reinterpret_cast<iterator>(
+          aligned_alloc(AlignBytes, sizeof(T_) * num_elements));
 #pragma omp parallel for
-      for (size_t i = 0; i < size(); i++)
+      for (size_t i = 0; i < size(); i++) {
         new_range[i] = start_[i];
+      }
       end_size_ = new_range + size();
-      delete[] start_;
+      free(start_);
       start_ = new_range;
       end_capacity_ = start_ + num_elements;
     }

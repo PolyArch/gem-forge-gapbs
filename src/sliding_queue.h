@@ -57,6 +57,12 @@ public:
   iterator end() const { return shared + shared_out_end; }
 
   size_t size() const { return end() - begin(); }
+
+  void append(T *data, size_t size) {
+    T *shared_queue = this->shared;
+    size_t copy_start = fetch_and_add(this->shared_in, size);
+    std::copy(data, data + size, shared_queue + copy_start);
+  }
 };
 
 template <typename T> class QueueBuffer {
@@ -81,9 +87,7 @@ public:
   }
 
   void flush() {
-    T *shared_queue = sq.shared;
-    size_t copy_start = fetch_and_add(sq.shared_in, in);
-    std::copy(local_queue, local_queue + in, shared_queue + copy_start);
+    sq.append(local_queue, in);
     in = 0;
   }
 };
