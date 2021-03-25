@@ -44,12 +44,12 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters,
   ScoreT *scores_data = scores.data();
   ScoreT *next_scores_data = next_scores.data();
   NodeID **out_neigh_index = g.out_neigh_index();
-  NodeID *out_edges = g.out_edges();
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
 #ifdef GEM_FORGE_WARM_CACHE
   {
+    NodeID *out_edges = g.out_edges();
 #pragma omp parallel for firstprivate(scores_data, next_scores_data,           \
                                       out_neigh_index)
     for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(ScoreT)) {
