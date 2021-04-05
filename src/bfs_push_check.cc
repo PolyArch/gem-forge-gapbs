@@ -13,6 +13,7 @@
 #include "graph.h"
 #include "platform_atomics.h"
 #include "pvector.h"
+#include "sized_array.h"
 #include "sliding_queue.h"
 #include "source_generator.h"
 #include "timer.h"
@@ -48,41 +49,54 @@ them in parent array as negative numbers. Thus the encoding of parent is:
 
 using namespace std;
 
-int64_t BUStep(const Graph &g, pvector<NodeID> &parent,
-               pvector<NodeID> &next_parent) {
-  int64_t awake_count = 0;
-  NodeID **graph_in_neigh_index = g.in_neigh_index();
-  auto *parent_v = parent.data();
-  auto *next_parent_v = next_parent.data();
-#pragma omp parallel for schedule(static) reduction(+ : awake_count) \
-  firstprivate(graph_in_neigh_index, parent_v, next_parent_v)
-  for (NodeID u = 0; u < g.num_nodes(); u++) {
-    if (parent[u] < 0) {
-      // Explicit write this to avoid u + 1 and misplaced stream_step.
-      NodeID *const *in_neigh_index = graph_in_neigh_index + u;
-      const NodeID *in_neigh_begin = in_neigh_index[0];
-      const NodeID *in_neigh_end = in_neigh_index[1];
-      const auto N = in_neigh_end - in_neigh_begin;
-      // Better to reduce from zero.
-      NodeID p = 0;
-      for (int64_t i = 0; i < N; ++i) {
-        NodeID v = in_neigh_begin[i];
-        NodeID vParent = parent_v[v];
-        p = (vParent > -1) ? (v + 1) : p;
-      }
-      if (p != 0) {
-        next_parent_v[u] = p - 1;
-        awake_count++;
+const NodeID InitParentId = -1;
+
+void TDStep(const Graph &g, pvector<NodeID> &parent,
+            SlidingQueue<NodeID> &queue) {
+  auto parent_v = parent.data();
+  auto queue_v = queue.begin();
+  auto queue_e = queue.end();
+  int64_t queue_size = queue_e - queue_v;
+  /**
+   * Helper function for debug perpose.
+   */
+  // {
+  //   static int iter = 0;
+  //   uint64_t totalIdx = 0;
+  //   for (auto iter = queue_v; iter < queue_e; iter++) {
+  //     NodeID u = *iter;
+  //     totalIdx += u;
+  //   }
+  //   printf(" - TD %d Size %ld Total %lu.\n", iter, queue_e - queue_v,
+  //   totalIdx); iter++;
+  // }
+#pragma omp parallel firstprivate(queue_v, queue_size, parent_v)
+  {
+    SizedArray<NodeID> lqueue(g.num_nodes());
+    NodeID **graph_out_neigh_index = g.out_neigh_index();
+#pragma omp for schedule(static)
+    for (int64_t i = 0; i < queue_size; ++i) {
+      NodeID u = queue_v[i];
+      // Explicit write this out to aviod u + 1.
+      NodeID *const *out_neigh_index = graph_out_neigh_index + u;
+      const NodeID *out_neigh_begin = out_neigh_index[0];
+      const NodeID *out_neigh_end = out_neigh_index[1];
+      const auto N = out_neigh_end - out_neigh_begin;
+      for (int64_t j = 0; j < N; ++j) {
+        NodeID v = out_neigh_begin[j];
+        if (parent_v[v] == InitParentId) {
+          bool swapped = compare_and_swap(parent_v[v], InitParentId, u);
+          if (swapped) {
+            lqueue.push_back(v);
+          }
+        }
       }
     }
+    // Flush into the global queue.
+    queue.append(lqueue.begin(), lqueue.size());
   }
 
-// Copy next_parent into parent.
-#pragma omp parallel for schedule(static) firstprivate(parent_v, next_parent_v)
-  for (NodeID u = 0; u < g.num_nodes(); u++) {
-    parent_v[u] = next_parent_v[u];
-  }
-  return awake_count;
+  return;
 }
 
 pvector<NodeID> InitParent(const Graph &g) {
@@ -100,30 +114,33 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
   Timer t;
   t.Start();
   pvector<NodeID> parent = InitParent(g);
-  pvector<NodeID> next_parent = InitParent(g);
   t.Stop();
   PrintStep("i", t.Seconds());
   parent[source] = source;
-  next_parent[source] = source;
+  SlidingQueue<NodeID> queue(g.num_nodes());
+  queue.push_back(source);
+  queue.slide_window();
+  Bitmap curr(g.num_nodes());
+  curr.reset();
+  Bitmap front(g.num_nodes());
+  front.reset();
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
 #ifdef GEM_FORGE_WARM_CACHE
   {
-    NodeID **in_neigh_index = g.in_neigh_index();
-    NodeID *in_edges = g.in_edges();
+    NodeID **out_neigh_index = g.out_neigh_index();
+    NodeID *out_edges = g.out_edges();
     NodeID *parent_data = parent.data();
-    NodeID *next_parent_data = parent.data();
-#pragma omp parallel for firstprivate(in_neigh_index)
-    for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(*in_neigh_index)) {
-      __attribute__((unused)) volatile NodeID *in_neigh = in_neigh_index[n];
+#pragma omp parallel for firstprivate(out_neigh_index)
+    for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(*out_neigh_index)) {
+      __attribute__((unused)) volatile NodeID *out_neigh = out_neigh_index[n];
       __attribute__((unused)) volatile NodeID parent = parent_data[n];
-      __attribute__((unused)) volatile NodeID next_parent = next_parent_data[n];
     }
-#pragma omp parallel for firstprivate(in_edges)
+#pragma omp parallel for firstprivate(out_edges)
     for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(NodeID)) {
       // We also warm up the out edge list.
-      __attribute__((unused)) volatile NodeID edge = in_edges[e];
+      __attribute__((unused)) volatile NodeID edge = out_edges[e];
     }
   }
   std::cout << "Warm up done.\n";
@@ -131,23 +148,21 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
   m5_reset_stats(0, 0);
 #endif
 
-  PrintStep("e", t.Seconds());
-  int64_t awake_count = 1;
-  while (awake_count > 0) {
+  while (!queue.empty()) {
 #ifdef GEM_FORGE
     m5_work_begin(0, 0);
 #else
     t.Start();
 #endif
-    awake_count = BUStep(g, parent, next_parent);
+    TDStep(g, parent, queue);
+    queue.slide_window();
 #ifdef GEM_FORGE
     m5_work_end(0, 0);
 #else
     t.Stop();
-    PrintStep("bu", t.Seconds(), awake_count);
+    PrintStep("td", t.Seconds(), queue.size());
 #endif
   }
-  PrintStep("c", t.Seconds());
 
 #ifdef GEM_FORGE
   m5_detail_sim_end();

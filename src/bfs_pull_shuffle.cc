@@ -48,15 +48,17 @@ them in parent array as negative numbers. Thus the encoding of parent is:
 
 using namespace std;
 
-int64_t BUStep(const Graph &g, pvector<NodeID> &parent,
-               pvector<NodeID> &next_parent) {
+int64_t BUStep(const Graph &g, const pvector<NodeID> &nodes,
+               pvector<NodeID> &parent, pvector<NodeID> &next_parent) {
   int64_t awake_count = 0;
   NodeID **graph_in_neigh_index = g.in_neigh_index();
+  auto *nodes_v = nodes.data();
   auto *parent_v = parent.data();
   auto *next_parent_v = next_parent.data();
 #pragma omp parallel for schedule(static) reduction(+ : awake_count) \
-  firstprivate(graph_in_neigh_index, parent_v, next_parent_v)
-  for (NodeID u = 0; u < g.num_nodes(); u++) {
+  firstprivate(graph_in_neigh_index, nodes_v, parent_v, next_parent_v)
+  for (int64_t x = 0; x < g.num_nodes(); ++x) {
+    NodeID u = nodes_v[x];
     if (parent[u] < 0) {
       // Explicit write this to avoid u + 1 and misplaced stream_step.
       NodeID *const *in_neigh_index = graph_in_neigh_index + u;
@@ -94,11 +96,27 @@ pvector<NodeID> InitParent(const Graph &g) {
   return parent;
 }
 
+pvector<NodeID> InitShuffledNodes(const Graph &g) {
+  pvector<NodeID> nodes(g.num_nodes());
+  for (NodeID n = 0; n < g.num_nodes(); n++) {
+    nodes[n] = n;
+  }
+  for (NodeID i = 0; i + 1 < g.num_nodes(); ++i) {
+    // Shuffle a little bit to make it not always linear access.
+    long long j = (rand() % (g.num_nodes() - i)) + i;
+    NodeID tmp = nodes[i];
+    nodes[i] = nodes[j];
+    nodes[j] = tmp;
+  }
+  return nodes;
+}
+
 pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
                       int beta = 18) {
   PrintStep("Source", static_cast<int64_t>(source));
   Timer t;
   t.Start();
+  pvector<NodeID> nodes = InitShuffledNodes(g);
   pvector<NodeID> parent = InitParent(g);
   pvector<NodeID> next_parent = InitParent(g);
   t.Stop();
@@ -112,11 +130,13 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
   {
     NodeID **in_neigh_index = g.in_neigh_index();
     NodeID *in_edges = g.in_edges();
+    NodeID *nodes_data = nodes.data();
     NodeID *parent_data = parent.data();
     NodeID *next_parent_data = parent.data();
 #pragma omp parallel for firstprivate(in_neigh_index)
     for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(*in_neigh_index)) {
       __attribute__((unused)) volatile NodeID *in_neigh = in_neigh_index[n];
+      __attribute__((unused)) volatile NodeID node = nodes_data[n];
       __attribute__((unused)) volatile NodeID parent = parent_data[n];
       __attribute__((unused)) volatile NodeID next_parent = next_parent_data[n];
     }
@@ -139,7 +159,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
 #else
     t.Start();
 #endif
-    awake_count = BUStep(g, parent, next_parent);
+    awake_count = BUStep(g, nodes, parent, next_parent);
 #ifdef GEM_FORGE
     m5_work_end(0, 0);
 #else
