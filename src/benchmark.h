@@ -16,6 +16,7 @@
 #include "timer.h"
 #include "util.h"
 #include "writer.h"
+#include "cluster.h"
 
 /*
 GAP Benchmark Suite
@@ -38,6 +39,9 @@ typedef BuilderBase<NodeID, WNode, WeightT> WeightedBuilder;
 
 typedef WriterBase<NodeID, NodeID> Writer;
 typedef WriterBase<NodeID, WNode> WeightedWriter;
+
+typedef ClusterBase<NodeID, NodeID> Cluster;
+typedef ClusterBase<NodeID, WNode> WeightedCluster;
 
 // Used to pick random non-zero degree starting points for search algorithms
 template <typename GraphT_> class SourcePicker {

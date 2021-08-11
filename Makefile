@@ -17,7 +17,7 @@ ifneq ($(SERIAL), 1)
 endif
 
 KERNELS = bc bfs bfs_push bfs_push_check bfs_pull bfs_pull_shuffle cc cc_sv pr_pull pr_pull_shuffle pr_push sssp sssp_check tc
-SUITE = $(KERNELS) converter
+SUITE = $(KERNELS) converter gscore bound_dfs nuca_analysis
 
 .PHONY: all
 all: $(SUITE)

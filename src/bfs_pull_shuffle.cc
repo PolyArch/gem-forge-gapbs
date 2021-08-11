@@ -59,12 +59,12 @@ int64_t BUStep(const Graph &g, const pvector<NodeID> &nodes,
   firstprivate(graph_in_neigh_index, nodes_v, parent_v, next_parent_v)
   for (int64_t x = 0; x < g.num_nodes(); ++x) {
     NodeID u = nodes_v[x];
+    // Explicit write this to avoid u + 1 and misplaced stream_step.
+    NodeID *const *in_neigh_index = graph_in_neigh_index + u;
+    const NodeID *in_neigh_begin = in_neigh_index[0];
+    const NodeID *in_neigh_end = in_neigh_index[1];
+    const auto N = in_neigh_end - in_neigh_begin;
     if (parent[u] < 0) {
-      // Explicit write this to avoid u + 1 and misplaced stream_step.
-      NodeID *const *in_neigh_index = graph_in_neigh_index + u;
-      const NodeID *in_neigh_begin = in_neigh_index[0];
-      const NodeID *in_neigh_end = in_neigh_index[1];
-      const auto N = in_neigh_end - in_neigh_begin;
       // Better to reduce from zero.
       NodeID p = 0;
       for (int64_t i = 0; i < N; ++i) {

@@ -32,6 +32,8 @@ public:
     return sources;
   }
 
+  NodeID getSource() const { return this->pickedSource; }
+
 private:
   const GraphT_ &g_;
   NodeID pickedSource;
