@@ -22,16 +22,19 @@ int main(int argc, char *argv[]) {
     WGraph wg = bw.MakeGraph();
     wg.PrintStats();
     WeightedWriter ww(wg);
-    ww.WriteGraph(cli.out_filename(), cli.out_sg());
-    SourceGenerator<WGraph> sg(wg);
+    ww.WriteGraph(cli.out_filename() + ".wsg", true /* serialized */);
+    ww.WriteGraph(cli.out_filename() + ".wel", false /* serialized */);
+    SourceGenerator<WGraph> sg(wg, cli.src());
     sg.writeToFile(cli.out_filename());
   } else {
     Builder b(cli);
     Graph g = b.MakeGraph();
     g.PrintStats();
     Writer w(g);
-    w.WriteGraph(cli.out_filename(), cli.out_sg());
-    SourceGenerator<Graph> sg(g);
+    // Dump both version.
+    w.WriteGraph(cli.out_filename() + ".sg", true /* serialized */);
+    w.WriteGraph(cli.out_filename() + ".el", false /* serialized */);
+    SourceGenerator<Graph> sg(g, cli.src());
     sg.writeToFile(cli.out_filename());
   }
   return 0;

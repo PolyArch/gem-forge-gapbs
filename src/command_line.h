@@ -246,14 +246,17 @@ class CLConvert : public CLBase {
   bool out_weighted_ = false;
   bool out_el_ = false;
   bool out_sg_ = false;
+  int64_t src_ = -1;
 
 public:
   CLConvert(int argc, char **argv, std::string name)
       : CLBase(argc, argv, name) {
-    get_args_ += "e:b:w";
+    get_args_ += "e:b:wr:";
     AddHelpLine('b', "file", "output serialized graph to file");
     AddHelpLine('e', "file", "output edge list to file");
     AddHelpLine('w', "", "make output weighted");
+    AddHelpLine('r', "-1", "Source/Root node");
+
   }
 
   void HandleArg(signed char opt, char *opt_arg) override {
@@ -269,6 +272,8 @@ public:
     case 'w':
       out_weighted_ = true;
       break;
+    case 'r':
+      src_ = std::atoll(opt_arg);
     default:
       CLBase::HandleArg(opt, opt_arg);
     }
@@ -278,6 +283,7 @@ public:
   bool out_weighted() const { return out_weighted_; }
   bool out_el() const { return out_el_; }
   bool out_sg() const { return out_sg_; }
+  int64_t src() const { return src_; }
 };
 
 #endif // COMMAND_LINE_H_

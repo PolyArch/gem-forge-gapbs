@@ -11,8 +11,13 @@
 // Pick up a source that covers most of the nodes.
 template <typename GraphT_> class SourceGenerator {
 public:
-  explicit SourceGenerator(const GraphT_ &g) : g_(g) {
-    pickedSource = pickSource();
+  explicit SourceGenerator(const GraphT_ &g, int64_t pickedSource_ = -1)
+      : g_(g) {
+    if (pickedSource_ == -1) {
+      pickedSource = pickSource();
+    } else {
+      pickedSource = pickedSource_;
+    }
   }
 
   void writeToFile(const std::string &graph_fn) {
@@ -22,7 +27,12 @@ public:
   }
 
   static std::vector<NodeID> loadSource(const std::string &graph_fn) {
-    std::ifstream i(graph_fn + src_suffix());
+    auto suffix_pos = graph_fn.rfind(".");
+    auto src_fn = graph_fn + src_suffix();
+    if (suffix_pos != std::string::npos) {
+      src_fn = graph_fn.substr(0, suffix_pos) + src_suffix(); 
+    }
+    std::ifstream i(src_fn);
     std::vector<NodeID> sources;
     if (i.is_open()) {
       NodeID source;
