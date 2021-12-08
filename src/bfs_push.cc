@@ -67,8 +67,8 @@ void TDStep(const Graph &g, pvector<NodeID> &parent,
   //     NodeID u = *iter;
   //     totalIdx += u;
   //   }
-  //   printf(" - TD %d Size %ld Total %lu.\n", iter, queue_e - queue_v, totalIdx);
-  //   iter++;
+  //   printf(" - TD %d Size %ld Total %lu.\n", iter, queue_e - queue_v,
+  //   totalIdx); iter++;
   // }
 #pragma omp parallel firstprivate(queue_v, queue_size, parent_v)
   {
@@ -76,15 +76,32 @@ void TDStep(const Graph &g, pvector<NodeID> &parent,
     NodeID **graph_out_neigh_index = g.out_neigh_index();
 #pragma omp for schedule(static)
     for (int64_t i = 0; i < queue_size; ++i) {
+
+#pragma ss stream_name "gap.bfs_push.u.ld"
       NodeID u = queue_v[i];
+
       // Explicit write this out to aviod u + 1.
       NodeID *const *out_neigh_index = graph_out_neigh_index + u;
+
+#pragma ss stream_name "gap.bfs_push.out_begin.ld"
       const NodeID *out_neigh_begin = out_neigh_index[0];
+
+#pragma ss stream_name "gap.bfs_push.out_end.ld"
       const NodeID *out_neigh_end = out_neigh_index[1];
+
       const auto N = out_neigh_end - out_neigh_begin;
+
       for (int64_t j = 0; j < N; ++j) {
+
+#pragma ss stream_name "gap.bfs_push.out_v.ld"
         NodeID v = out_neigh_begin[j];
-        bool swapped = compare_and_swap(parent_v[v], InitParentId, u);
+
+        NodeID temp = InitParentId;
+
+#pragma ss stream_name "gap.bfs_push.swap.at"
+        bool swapped = __atomic_compare_exchange_n(
+            parent_v + v, &temp, u, false /* weak */, __ATOMIC_RELAXED,
+            __ATOMIC_RELAXED);
         if (swapped) {
           lqueue.push_back(v);
         }

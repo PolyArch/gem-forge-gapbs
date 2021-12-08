@@ -144,7 +144,7 @@ public:
       diffs[n] = new_end - n_start;
     }
     pvector<SGOffset> sq_offsets = ParallelPrefixSum(diffs);
-    *sq_neighs = new DestID_[sq_offsets[g.num_nodes()]];
+    *sq_neighs = alignedAllocAndTouch<DestID_>(sq_offsets[g.num_nodes()]);
     *sq_index = CSRGraph<NodeID_, DestID_>::GenIndex(sq_offsets, *sq_neighs);
 #pragma omp parallel for private(n_start)
     for (NodeID_ n = 0; n < g.num_nodes(); n++) {
@@ -182,7 +182,7 @@ public:
                DestID_ **neighs) {
     pvector<NodeID_> degrees = CountDegrees(el, transpose);
     pvector<SGOffset> offsets = ParallelPrefixSum(degrees);
-    *neighs = new DestID_[offsets[num_nodes_]];
+    *neighs = alignedAllocAndTouch<DestID_>(num_nodes_);
     *index = CSRGraph<NodeID_, DestID_>::GenIndex(offsets, *neighs);
 #pragma omp parallel for
     for (auto it = el.begin(); it < el.end(); it++) {
@@ -260,7 +260,7 @@ public:
       new_ids[degree_id_pairs[n].second] = n;
     }
     pvector<SGOffset> offsets = ParallelPrefixSum(degrees);
-    DestID_ *neighs = new DestID_[offsets[g.num_nodes()]];
+    DestID_ *neighs = alignedAllocAndTouch<DestID_>(offsets[g.num_nodes()]);
     DestID_ **index = CSRGraph<NodeID_, DestID_>::GenIndex(offsets, neighs);
 #pragma omp parallel for
     for (NodeID_ u = 0; u < g.num_nodes(); u++) {

@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cstdlib>
 
+#include "util.h"
+
 /*
 GAP Benchmark Suite
 Class:  pvector
@@ -22,15 +24,13 @@ Sean: Support aligned allocation.
 
 template <typename T_> class pvector {
 public:
-  static constexpr std::size_t AlignBytes = 64;
 
   typedef T_ *iterator;
 
   pvector() : start_(nullptr), end_size_(nullptr), end_capacity_(nullptr) {}
 
   explicit pvector(size_t num_elements) {
-    start_ = reinterpret_cast<iterator>(
-        aligned_alloc(AlignBytes, sizeof(T_) * num_elements));
+    start_ = alignedAllocAndTouch<T_>(num_elements);
     end_size_ = start_ + num_elements;
     end_capacity_ = end_size_;
   }
@@ -115,6 +115,14 @@ public:
 
   void fill(T_ init_val) {
 #pragma omp parallel for
+    for (T_ *ptr = start_; ptr < end_size_; ptr++)
+      *ptr = init_val;
+  }
+
+  /**
+   * Used to guarantee continuous physical address, so no omp or inlining.
+   */
+  __attribute__((noinline)) void serialFill(T_ init_val) {
     for (T_ *ptr = start_; ptr < end_size_; ptr++)
       *ptr = init_val;
   }

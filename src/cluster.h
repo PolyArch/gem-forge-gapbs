@@ -589,8 +589,8 @@ public:
     auto num_nodes = g.num_nodes();
     auto num_edges = g.out_neigh_index()[num_nodes] - g.out_neigh_index()[0];
 
-    DestID_ *edges = new DestID_[num_edges];
-    DestID_ **indexes = new DestID_ *[num_nodes + 1];
+    DestID_ *edges = alignedAllocAndTouch<DestID_>(num_edges);
+    DestID_ **indexes = alignedAllocAndTouch<DestID_ *>(num_nodes + 1);
     int64_t cur_edges = 0;
     for (auto v = 0; v < num_nodes; ++v) {
       indexes[v] = edges + cur_edges;

@@ -28,43 +28,129 @@ This PR implementation uses the traditional iterative approach. This is done
 to ease comparisons to other implementations (often use same algorithm), but
 it is not necesarily the fastest way to implement it. It does perform the
 updates in the pull direction to remove the need for atomics.
+
+CONTROL FLAGS:
+USE_EDGE_INDEX_OFFSET: Use index_offset instead of the pointer index.
 */
 
 using namespace std;
 
+#ifdef USE_DOUBLE_SCORE_T
+typedef double ScoreT;
+#else
 typedef float ScoreT;
+#endif
+
+#ifndef OMP_SCHEDULE_TYPE
+#define OMP_SCHEDULE_TYPE schedule(static)
+#endif
+
 const float kDamp = 0.85;
 
-pvector<ScoreT> PageRankPush(const Graph &g, int max_iters,
-                             double epsilon = 0) {
-  const ScoreT init_score = 1.0f / g.num_nodes();
-  const ScoreT base_score = (1.0f - kDamp) / g.num_nodes();
-  pvector<ScoreT> scores(g.num_nodes(), init_score);
-  pvector<ScoreT> next_scores(g.num_nodes(), 0);
+pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
+                             int warm_cache = 2, int num_threads = 1) {
+  const auto num_nodes = g.num_nodes();
+  const auto num_edges = g.num_edges();
+  NodeID *out_edges = g.out_edges();
+  const ScoreT init_score = 1.0f / num_nodes;
+  const ScoreT base_score = (1.0f - kDamp) / num_nodes;
+
+  pvector<ScoreT> scores(num_nodes, init_score);
+  pvector<ScoreT> next_scores(num_nodes, 0);
+
   ScoreT *scores_data = scores.data();
   ScoreT *next_scores_data = next_scores.data();
-  NodeID **out_neigh_index = g.out_neigh_index();
+
+#ifdef USE_EDGE_INDEX_OFFSET
+#define EdgeIndexT NodeID
+  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
+#else
+#define EdgeIndexT NodeID *
+  EdgeIndexT *out_neigh_index = g.out_neigh_index();
+#endif // USE_EDGE_INDEX_OFFSET
+
+#ifdef GEM_FORGE
+
+  m5_stream_nuca_region("gap.pr_push.score", scores_data, sizeof(ScoreT),
+                        num_nodes);
+  m5_stream_nuca_region("gap.pr_push.next_score", next_scores_data,
+                        sizeof(ScoreT), num_nodes);
+  m5_stream_nuca_region("gap.pr_push.out_neigh_index", out_neigh_index,
+                        sizeof(EdgeIndexT), num_nodes);
+  m5_stream_nuca_region("gap.pr_push.out_edge", out_edges, sizeof(NodeID),
+                        num_edges);
+  m5_stream_nuca_align(scores_data, next_scores_data, 0);
+  m5_stream_nuca_align(out_neigh_index, next_scores_data, 0);
+  m5_stream_nuca_align(out_edges, next_scores_data,
+                       STREAM_NUCA_IND_ALIGN_EVERY_ELEMENT);
+  m5_stream_nuca_remap();
+
+#endif // GEM_FORGE
+
+#ifdef SHUFFLE_NODES
+  // Shuffle the nodes.
+  int64_t num_nodes = g.num_nodes();
+  pvector<NodeID> nodes(num_nodes);
+  for (NodeID i = 0; i < num_nodes; ++i) {
+    nodes[i] = i;
+  }
+  for (NodeID i = 0; i + 1 < num_nodes; ++i) {
+    // Shuffle a little bit to make it not always linear access.
+    long long j = (rand() % (num_nodes - i)) + i;
+    NodeID tmp = nodes[i];
+    nodes[i] = nodes[j];
+    nodes[j] = tmp;
+  }
+  NodeID *nodes_data = nodes.data();
+#endif
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
-#ifdef GEM_FORGE_WARM_CACHE
-  {
-    NodeID *out_edges = g.out_edges();
+#endif // GEM_FORGE
+
+  if (warm_cache > 0) {
+
+#ifdef SHUFFLE_NODES
+#pragma omp parallel for firstprivate(scores_data, next_scores_data,           \
+                                      out_neigh_index, nodes_data)
+#else
 #pragma omp parallel for firstprivate(scores_data, next_scores_data,           \
                                       out_neigh_index)
+#endif // SHUFFLE_NODES
     for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(ScoreT)) {
+
+#ifdef SHUFFLE_NODES
+      __attribute__((unused)) volatile NodeID node = nodes_data[n];
+#endif // SHUFFLE_NODES
+
       __attribute__((unused)) volatile ScoreT score = scores_data[n];
       __attribute__((unused)) volatile ScoreT next_score = next_scores_data[n];
-      __attribute__((unused)) volatile NodeID *out_neigh = out_neigh_index[n];
+      __attribute__((unused)) volatile EdgeIndexT out_neigh =
+          out_neigh_index[n];
     }
+
+    if (warm_cache > 1) {
 #pragma omp parallel for firstprivate(out_edges)
-    for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(NodeID)) {
-      // We also warm up the out edge list.
-      __attribute__((unused)) volatile NodeID edge = out_edges[e];
+      for (NodeID e = 0; e < num_edges; e += 64 / sizeof(NodeID)) {
+        // We also warm up the out edge list.
+        __attribute__((unused)) volatile NodeID edge = out_edges[e];
+      }
+    }
+
+    std::cout << "Warm up done.\n";
+  }
+
+  // Start the threads.
+  {
+    float v;
+    float *pv = &v;
+#pragma omp parallel for schedule(static)
+    for (uint64_t i = 0; i < num_threads; ++i) {
+      __attribute__((unused)) volatile float v = *pv;
     }
   }
-  std::cout << "Warm up done.\n";
-#endif
+
+#ifdef GEM_FORGE
   m5_reset_stats(0, 0);
 #endif
 
@@ -75,17 +161,51 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters,
 #endif
 
 #ifndef DISABLE_KERNEL1
-#pragma omp parallel for schedule(static)                                      \
-    firstprivate(scores_data, out_neigh_index, next_scores_data)
-    for (NodeID n = 0; n < g.num_nodes(); n++) {
-      NodeID **out_neigh_ptr = out_neigh_index + n;
-      NodeID *out_neigh = out_neigh_ptr[0];
-      NodeID *out_neigh_next = out_neigh_ptr[1];
+
+#ifdef SHUFFLE_NODES
+
+#pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(                       \
+    scores_data, out_neigh_index, out_edges, next_scores_data, nodes_data)
+    for (int64_t i = 0; i < g.num_nodes(); i++) {
+
+#pragma ss stream_name "gap.pr_push.atomic.node.ld"
+      NodeID n = nodes_data[i];
+
+#else
+
+#pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(                       \
+    scores_data, out_neigh_index, out_edges, next_scores_data)
+    for (int64_t i = 0; i < g.num_nodes(); i++) {
+
+      int64_t n = i;
+
+#endif
+
+      EdgeIndexT *out_neigh_ptr = out_neigh_index + n;
+
+#pragma ss stream_name "gap.pr_push.atomic.score.ld"
       ScoreT score = scores_data[n];
-      int64_t out_degree = out_neigh_next - out_neigh;
+
+#pragma ss stream_name "gap.pr_push.atomic.out_begin.ld"
+      EdgeIndexT out_begin = out_neigh_ptr[0];
+
+#pragma ss stream_name "gap.pr_push.atomic.out_end.ld"
+      EdgeIndexT out_end = out_neigh_ptr[1];
+
+#ifdef USE_EDGE_INDEX_OFFSET
+      NodeID *out_ptr = out_edges + out_begin;
+#else
+      NodeID *out_ptr = out_begin;
+#endif
+
+      int64_t out_degree = out_end - out_begin;
       ScoreT outgoing_contrib = score / out_degree;
-      for (int64_t i = 0; i < out_degree; ++i) {
-        NodeID v = out_neigh[i];
+      for (int64_t j = 0; j < out_degree; ++j) {
+
+#pragma ss stream_name "gap.pr_push.atomic.out_v.ld"
+        NodeID v = out_ptr[j];
+
+#pragma ss stream_name "gap.pr_push.atomic.next.at"
         __atomic_fetch_fadd(next_scores_data + v, outgoing_contrib,
                             __ATOMIC_RELAXED);
       }
@@ -107,10 +227,20 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters,
 #pragma omp parallel for reduction(+ : error) schedule(static) \
   firstprivate(scores_data, next_scores_data, base_score, kDamp)
     for (NodeID n = 0; n < g.num_nodes(); n++) {
+
+#pragma ss stream_name "gap.pr_push.update.score.ld"
       ScoreT score = scores_data[n];
-      ScoreT next_score = base_score + kDamp * next_scores_data[n];
+
+#pragma ss stream_name "gap.pr_push.update.next.ld"
+      ScoreT next = next_scores_data[n];
+
+      ScoreT next_score = base_score + kDamp * next;
       error += next_score > score ? (next_score - score) : (score - next_score);
+
+#pragma ss stream_name "gap.pr_push.update.score.st"
       scores_data[n] = next_score;
+
+#pragma ss stream_name "gap.pr_push.update.next.st"
       next_scores_data[n] = 0;
     }
 #endif
@@ -183,7 +313,8 @@ int main(int argc, char *argv[]) {
   Builder b(cli);
   Graph g = b.MakeGraph();
   auto PRBound = [&cli](const Graph &g) {
-    return PageRankPush(g, cli.max_iters(), cli.tolerance());
+    return PageRankPush(g, cli.max_iters(), cli.tolerance(), cli.warm_cache(),
+                        cli.num_threads());
   };
   auto VerifierBound = [&cli](const Graph &g, const pvector<ScoreT> &scores) {
     return PRVerifier(g, scores, cli.tolerance());

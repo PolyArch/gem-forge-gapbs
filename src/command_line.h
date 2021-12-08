@@ -28,7 +28,7 @@ protected:
   int argc_;
   char **argv_;
   std::string name_;
-  std::string get_args_ = "f:g:hk:su:";
+  std::string get_args_ = "f:g:hk:su:c:";
   std::vector<std::string> help_strings_;
 
   int scale_ = -1;
@@ -36,6 +36,13 @@ protected:
   std::string filename_ = "";
   bool symmetrize_ = false;
   bool uniform_ = false;
+  /**
+   * How to warm up cache:
+   * 0: don't warm up.
+   * 1: warm up except the edge list.
+   * 2: warm up everything.
+   */
+  int warm_cache_ = 2;
 
   void AddHelpLine(char opt, std::string opt_arg, std::string text,
                    std::string def = "") {
@@ -60,6 +67,8 @@ public:
     AddHelpLine('u', "scale", "generate 2^scale uniform-random graph");
     AddHelpLine('k', "degree", "average degree for synthetic graph",
                 std::to_string(degree_));
+    AddHelpLine('c', "cache", "warm up cache to certain level",
+                std::to_string(warm_cache_));
   }
 
   bool ParseArgs() {
@@ -98,6 +107,9 @@ public:
       uniform_ = true;
       scale_ = atoi(opt_arg);
       break;
+    case 'c':
+      warm_cache_ = atoi(opt_arg);
+      break;
     }
   }
 
@@ -114,6 +126,7 @@ public:
   std::string filename() const { return filename_; }
   bool symmetrize() const { return symmetrize_; }
   bool uniform() const { return uniform_; }
+  int warm_cache() const { return warm_cache_; }
 };
 
 class CLApp : public CLBase {

@@ -79,4 +79,19 @@ public:
   RangeIter<T_> end() const { return RangeIter<T_>(to_); }
 };
 
+static constexpr std::size_t AlignBytes = 4096;
+template <typename T> T *alignedAllocAndTouch(size_t numElements) {
+  auto TotalBytes = sizeof(T) * numElements;
+  if (TotalBytes % AlignBytes) {
+    TotalBytes = (TotalBytes / AlignBytes + 1) * AlignBytes;
+  }
+  auto P = reinterpret_cast<T *>(aligned_alloc(AlignBytes, TotalBytes));
+
+  auto Raw = reinterpret_cast<char *>(P);
+  for (unsigned long Byte = 0; Byte < TotalBytes; Byte += AlignBytes) {
+    Raw[Byte] = 0;
+  }
+  return P;
+}
+
 #endif // UTIL_H_

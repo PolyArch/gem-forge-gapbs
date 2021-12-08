@@ -30,7 +30,7 @@ public:
     auto suffix_pos = graph_fn.rfind(".");
     auto src_fn = graph_fn + src_suffix();
     if (suffix_pos != std::string::npos) {
-      src_fn = graph_fn.substr(0, suffix_pos) + src_suffix(); 
+      src_fn = graph_fn.substr(0, suffix_pos) + src_suffix();
     }
     std::ifstream i(src_fn);
     std::vector<NodeID> sources;
@@ -53,12 +53,13 @@ private:
   NodeID pickSource() {
 
     // Perform 10 BFS to pick up a suitable root.
-    const size_t numIters = 10;
+    const size_t numIters = 20;
 
     auto numNodes = g_.num_nodes();
     NodeID pickedSource = 0;
     size_t maxVisitedEdges = 0;
 
+#pragma omp parallel for shared(pickedSource, maxVisitedEdges)
     for (size_t i = 0; i < numIters; ++i) {
       NodeID root = numNodes * i / numIters;
       std::unordered_map<NodeID, size_t> visited;
@@ -78,6 +79,9 @@ private:
           visitedEdges++;
         }
       }
+      std::cout << "[Source] " << i << "th Src " << root << " VisitedEdges "
+                << visitedEdges << '\n';
+#pragma omp critical
       if (visitedEdges > maxVisitedEdges) {
         pickedSource = root;
         maxVisitedEdges = visitedEdges;

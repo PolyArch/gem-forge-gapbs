@@ -5,9 +5,11 @@
 #define GRAPH_H_
 
 #include <algorithm>
+#include <cassert>
 #include <cinttypes>
 #include <cstddef>
 #include <iostream>
+#include <limits>
 #include <type_traits>
 
 #include "pvector.h"
@@ -97,26 +99,30 @@ class CSRGraph {
 
   void ReleaseResources() {
     if (out_index_ != nullptr)
-      delete[] out_index_;
+      free(out_index_);
+    if (out_index_offset_ != nullptr)
+      free(out_index_offset_);
     if (out_neighbors_ != nullptr)
-      delete[] out_neighbors_;
+      free(out_neighbors_);
     if (directed_) {
       if (in_index_ != nullptr)
-        delete[] in_index_;
+        free(in_index_);
+      if (in_index_offset_ != nullptr)
+        free(in_index_offset_);
       if (in_neighbors_ != nullptr)
-        delete[] in_neighbors_;
+        free(in_neighbors_);
     }
   }
 
 public:
-  CSRGraph()
-      : directed_(false), num_nodes_(-1), num_edges_(-1), out_index_(nullptr),
-        out_neighbors_(nullptr), in_index_(nullptr), in_neighbors_(nullptr) {}
+  CSRGraph() : directed_(false), num_nodes_(-1), num_edges_(-1) {}
 
   CSRGraph(int64_t num_nodes, DestID_ **index, DestID_ *neighs)
       : directed_(false), num_nodes_(num_nodes), out_index_(index),
         out_neighbors_(neighs), in_index_(index), in_neighbors_(neighs) {
     num_edges_ = (out_index_[num_nodes_] - out_index_[0]) / 2;
+    this->out_index_offset_ = this->GenIndexOffset(out_index_, out_neighbors_);
+    this->in_index_offset_ = this->out_index_offset_;
   }
 
   CSRGraph(int64_t num_nodes, DestID_ **out_index, DestID_ *out_neighs,
@@ -125,18 +131,24 @@ public:
         out_neighbors_(out_neighs), in_index_(in_index),
         in_neighbors_(in_neighs) {
     num_edges_ = out_index_[num_nodes_] - out_index_[0];
+    this->out_index_offset_ = this->GenIndexOffset(out_index_, out_neighbors_);
+    this->in_index_offset_ = this->GenIndexOffset(in_index_, in_neighbors_);
   }
 
   CSRGraph(CSRGraph &&other)
       : directed_(other.directed_), num_nodes_(other.num_nodes_),
         num_edges_(other.num_edges_), out_index_(other.out_index_),
+        out_index_offset_(other.out_index_offset_),
         out_neighbors_(other.out_neighbors_), in_index_(other.in_index_),
+        in_index_offset_(other.in_index_offset_),
         in_neighbors_(other.in_neighbors_) {
     other.num_edges_ = -1;
     other.num_nodes_ = -1;
     other.out_index_ = nullptr;
+    other.out_index_offset_ = nullptr;
     other.out_neighbors_ = nullptr;
     other.in_index_ = nullptr;
+    other.in_index_offset_ = nullptr;
     other.in_neighbors_ = nullptr;
   }
 
@@ -149,14 +161,18 @@ public:
       num_edges_ = other.num_edges_;
       num_nodes_ = other.num_nodes_;
       out_index_ = other.out_index_;
+      out_index_offset_ = other.out_index_offset_;
       out_neighbors_ = other.out_neighbors_;
       in_index_ = other.in_index_;
+      in_index_offset_ = other.in_index_offset_;
       in_neighbors_ = other.in_neighbors_;
       other.num_edges_ = -1;
       other.num_nodes_ = -1;
       other.out_index_ = nullptr;
+      other.out_index_offset_ = nullptr;
       other.out_neighbors_ = nullptr;
       other.in_index_ = nullptr;
+      other.in_index_offset_ = nullptr;
       other.in_neighbors_ = nullptr;
     }
     return *this;
@@ -191,10 +207,15 @@ public:
   }
 
   DestID_ **out_neigh_index() const { return out_index_; }
+  DestID_ *out_neigh_index_offset() const { return out_index_offset_; }
 
   DestID_ **in_neigh_index() const {
     static_assert(MakeInverse, "Graph inversion disabled but reading inverse");
     return in_index_;
+  }
+  DestID_ *in_neigh_index_offset() const {
+    static_assert(MakeInverse, "Graph inversion disabled but reading inverse");
+    return in_index_offset_;
   }
 
   DestID_ *out_edges() const { return out_neighbors_; }
@@ -204,11 +225,14 @@ public:
   }
 
   void PrintStats() const {
-    std::cout << "Graph has " << num_nodes_ << " nodes and " << num_edges_
-              << " ";
+    std::cout << "Graph has " << num_nodes_ << " nodes ("
+              << this->num_nodes() * sizeof(NodeID_) / 1024 << "kB) and "
+              << num_edges_ << " ";
     if (!directed_)
       std::cout << "un";
-    std::cout << "directed edges for degree: ";
+    std::cout << "directed edges ("
+              << this->num_edges_directed() * sizeof(DestID_) / 1024
+              << "kB) for degree: ";
     std::cout << num_edges_ / num_nodes_ << std::endl;
   }
 
@@ -224,11 +248,22 @@ public:
 
   static DestID_ **GenIndex(const pvector<SGOffset> &offsets, DestID_ *neighs) {
     NodeID_ length = offsets.size();
-    DestID_ **index = new DestID_ *[length];
+    DestID_ **index = alignedAllocAndTouch<DestID_ *>(length);
 #pragma omp parallel for
     for (NodeID_ n = 0; n < length; n++)
       index[n] = neighs + offsets[n];
     return index;
+  }
+
+  DestID_ *GenIndexOffset(DestID_ **indexes, DestID_ *base) {
+    DestID_ *offsets = alignedAllocAndTouch<DestID_>(num_nodes_ + 1);
+    for (NodeID_ i = 0; i < num_nodes_ + 1; ++i) {
+      auto index = indexes[i];
+      auto offset = index - base;
+      assert(offset <= std::numeric_limits<DestID_>::max());
+      offsets[i] = offset;
+    }
+    return offsets;
   }
 
   pvector<SGOffset> VertexOffsets(bool in_graph = false) const {
@@ -247,10 +282,12 @@ private:
   bool directed_;
   int64_t num_nodes_;
   int64_t num_edges_;
-  DestID_ **out_index_;
-  DestID_ *out_neighbors_;
-  DestID_ **in_index_;
-  DestID_ *in_neighbors_;
+  DestID_ **out_index_ = nullptr;
+  DestID_ *out_index_offset_ = nullptr;
+  DestID_ *out_neighbors_ = nullptr;
+  DestID_ **in_index_ = nullptr;
+  DestID_ *in_index_offset_ = nullptr;
+  DestID_ *in_neighbors_ = nullptr;
 };
 
 #endif // GRAPH_H_
