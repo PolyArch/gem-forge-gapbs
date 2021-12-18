@@ -64,6 +64,9 @@ execution order, leading to significant speedup on large diameter road networks.
     Shoaib Kamil, Saman Amarasinghe, and Julian Shun. "Optimizing ordered graph
     algorithms with GraphIt." The 18th International Symposium on Code
 Generation and Optimization (CGO), pages 158-170, 2020.
+
+Control flags:
+USE_EDGE_INDEX_OFFSET: Use index_offset instead of the pointer index.
 */
 
 using namespace std;
@@ -79,6 +82,12 @@ const BinIndexT kMaxBin = numeric_limits<BinIndexT>::max() / 2;
 const BinIndexT kMaxNumBin = 100;
 using BinT = SizedArray<NodeID>;
 
+#ifdef USE_EDGE_INDEX_OFFSET
+#define EdgeIndexT NodeID
+#else
+#define EdgeIndexT NodeID *
+#endif // USE_EDGE_INDEX_OFFSET
+
 __attribute__((noinline)) void RelaxEdges(const WGraph &g, NodeID u,
                                           WeightT dist_u, WeightT delta,
                                           pvector<WeightT> &dist,
@@ -92,31 +101,29 @@ __attribute__((noinline)) void RelaxEdges(const WGraph &g, NodeID u,
   const WNode *out_begin = out_neighbor.begin();
   const WNode *out_end = out_neighbor.end();
   const int64_t N = out_end - out_begin;
+
   for (int64_t i = 0; i < N; ++i) {
+
     const WNode &wn = out_begin[i];
+
+#pragma ss stream_name "gap.sssp.out_w.ld"
     const WeightT weight = wn.w;
+
+#pragma ss stream_name "gap.sssp.out_v.ld"
     const NodeID v = wn.v;
+
     WeightT new_dist = dist_u + weight;
     // Use clang's __atomic_fetch_min.
+
+#pragma ss stream_name "gap.sssp.min.at"
     WeightT old_dist =
         __atomic_fetch_min(&dist_data[v], new_dist, __ATOMIC_RELAXED);
+
     if (old_dist > new_dist) {
       size_t dest_bin = new_dist / delta;
       assert(dest_bin < local_bins.size());
       local_bins[dest_bin].push_back(v);
     }
-#if 0
-    WeightT old_dist = dist[v];
-    while (new_dist < old_dist) {
-      if (compare_and_swap(dist[v], old_dist, new_dist)) {
-        size_t dest_bin = new_dist / delta;
-        assert(dest_bin < local_bins.size());
-        local_bins[dest_bin].push_back(v);
-        break;
-      }
-      old_dist = dist[v]; // swap failed, recheck dist update & retry
-    }
-#endif
   }
 }
 

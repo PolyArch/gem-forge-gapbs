@@ -168,14 +168,18 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
   {
     const auto num_nodes = g.num_nodes();
     const auto num_edges = g.num_edges();
-    NodeID **out_neigh_index = g.out_neigh_index();
+#ifdef USE_EDGE_INDEX_OFFSET
+    EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
+#else
+    EdgeIndexT *out_neigh_index = g.out_neigh_index();
+#endif // USE_EDGE_INDEX_OFFSET
     NodeID *out_edges = g.out_edges();
     NodeID *parent_data = parent.data();
     m5_stream_nuca_region("gap.bfs_push.parent", parent_data, sizeof(NodeID),
                           num_nodes);
-    m5_stream_nuca_region("gap.pr_push.out_neigh_index", out_neigh_index,
+    m5_stream_nuca_region("gap.bfs_push.out_neigh_index", out_neigh_index,
                           sizeof(EdgeIndexT), num_nodes);
-    m5_stream_nuca_region("gap.pr_push.out_edge", out_edges, sizeof(NodeID),
+    m5_stream_nuca_region("gap.bfs_push.out_edge", out_edges, sizeof(NodeID),
                           num_edges);
     m5_stream_nuca_align(out_neigh_index, parent_data, 0);
     m5_stream_nuca_align(out_edges, parent_data,
@@ -191,7 +195,11 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
   if (warm_cache > 0) {
     auto num_nodes = g.num_nodes();
     auto num_edges = g.num_edges();
-    NodeID **out_neigh_index = g.out_neigh_index();
+#ifdef USE_EDGE_INDEX_OFFSET
+    EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
+#else
+    EdgeIndexT *out_neigh_index = g.out_neigh_index();
+#endif // USE_EDGE_INDEX_OFFSET
     NodeID *out_edges = g.out_edges();
     NodeID *parent_data = parent.data();
     gf_warm_array("out_neigh_index", out_neigh_index,
