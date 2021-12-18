@@ -52,6 +52,12 @@ typedef float ScoreT;
 #define SCORES_OFFSET_BYTES 0
 #endif
 
+#ifdef USE_EDGE_INDEX_OFFSET
+#define EdgeIndexT NodeID
+#else
+#define EdgeIndexT NodeID *
+#endif // USE_EDGE_INDEX_OFFSET
+
 const float kDamp = 0.85;
 
 pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
@@ -96,10 +102,8 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
   ScoreT *next_scores_data = next_scores.data();
 
 #ifdef USE_EDGE_INDEX_OFFSET
-#define EdgeIndexT NodeID
   EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
 #else
-#define EdgeIndexT NodeID *
   EdgeIndexT *out_neigh_index = g.out_neigh_index();
 #endif // USE_EDGE_INDEX_OFFSET
 

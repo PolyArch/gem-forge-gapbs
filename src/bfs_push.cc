@@ -45,9 +45,18 @@ them in parent array as negative numbers. Thus the encoding of parent is:
     Breadth-First Search." International Conference on High Performance
     Computing, Networking, Storage and Analysis (SC), Salt Lake City, Utah,
     November 2012.
+
+Control flags:
+USE_EDGE_INDEX_OFFSET: Use index_offset instead of the pointer index.
 */
 
 using namespace std;
+
+#ifdef USE_EDGE_INDEX_OFFSET
+#define EdgeIndexT NodeID
+#else
+#define EdgeIndexT NodeID *
+#endif // USE_EDGE_INDEX_OFFSET
 
 const NodeID InitParentId = -1;
 
@@ -57,6 +66,14 @@ void TDStep(const Graph &g, pvector<NodeID> &parent,
   auto queue_v = queue.begin();
   auto queue_e = queue.end();
   int64_t queue_size = queue_e - queue_v;
+
+  NodeID *out_edges = g.out_edges();
+#ifdef USE_EDGE_INDEX_OFFSET
+  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
+#else
+  EdgeIndexT *out_neigh_index = g.out_neigh_index();
+#endif
+
   /**
    * Helper function for debug perpose.
    */
@@ -70,10 +87,11 @@ void TDStep(const Graph &g, pvector<NodeID> &parent,
   //   printf(" - TD %d Size %ld Total %lu.\n", iter, queue_e - queue_v,
   //   totalIdx); iter++;
   // }
-#pragma omp parallel firstprivate(queue_v, queue_size, parent_v)
+#pragma omp parallel firstprivate(queue_v, queue_size, parent_v,               \
+                                  out_neigh_index, out_edges)
   {
     SizedArray<NodeID> lqueue(g.num_nodes());
-    NodeID **graph_out_neigh_index = g.out_neigh_index();
+
 #pragma omp for schedule(static)
     for (int64_t i = 0; i < queue_size; ++i) {
 
@@ -81,20 +99,26 @@ void TDStep(const Graph &g, pvector<NodeID> &parent,
       NodeID u = queue_v[i];
 
       // Explicit write this out to aviod u + 1.
-      NodeID *const *out_neigh_index = graph_out_neigh_index + u;
+      EdgeIndexT *out_neigh_ptr = out_neigh_index + u;
 
 #pragma ss stream_name "gap.bfs_push.out_begin.ld"
-      const NodeID *out_neigh_begin = out_neigh_index[0];
+      EdgeIndexT out_begin = out_neigh_ptr[0];
 
 #pragma ss stream_name "gap.bfs_push.out_end.ld"
-      const NodeID *out_neigh_end = out_neigh_index[1];
+      EdgeIndexT out_end = out_neigh_ptr[1];
 
-      const auto N = out_neigh_end - out_neigh_begin;
+#ifdef USE_EDGE_INDEX_OFFSET
+      NodeID *out_ptr = out_edges + out_begin;
+#else
+      NodeID *out_ptr = out_begin;
+#endif
 
-      for (int64_t j = 0; j < N; ++j) {
+      const auto out_degree = out_end - out_begin;
+
+      for (int64_t j = 0; j < out_degree; ++j) {
 
 #pragma ss stream_name "gap.bfs_push.out_v.ld"
-        NodeID v = out_neigh_begin[j];
+        NodeID v = out_ptr[j];
 
         NodeID temp = InitParentId;
 
@@ -124,7 +148,7 @@ pvector<NodeID> InitParent(const Graph &g) {
 }
 
 pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
-                      int beta = 18) {
+                      int beta = 18, int warm_cache = 2) {
   PrintStep("Source", static_cast<int64_t>(source));
   Timer t;
   t.Start();
@@ -141,25 +165,45 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
   front.reset();
 
 #ifdef GEM_FORGE
-  m5_detail_sim_start();
-#ifdef GEM_FORGE_WARM_CACHE
   {
+    const auto num_nodes = g.num_nodes();
+    const auto num_edges = g.num_edges();
     NodeID **out_neigh_index = g.out_neigh_index();
     NodeID *out_edges = g.out_edges();
     NodeID *parent_data = parent.data();
-#pragma omp parallel for firstprivate(out_neigh_index)
-    for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(*out_neigh_index)) {
-      __attribute__((unused)) volatile NodeID *out_neigh = out_neigh_index[n];
-      __attribute__((unused)) volatile NodeID parent = parent_data[n];
-    }
-#pragma omp parallel for firstprivate(out_edges)
-    for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(NodeID)) {
-      // We also warm up the out edge list.
-      __attribute__((unused)) volatile NodeID edge = out_edges[e];
-    }
+    m5_stream_nuca_region("gap.bfs_push.parent", parent_data, sizeof(NodeID),
+                          num_nodes);
+    m5_stream_nuca_region("gap.pr_push.out_neigh_index", out_neigh_index,
+                          sizeof(EdgeIndexT), num_nodes);
+    m5_stream_nuca_region("gap.pr_push.out_edge", out_edges, sizeof(NodeID),
+                          num_edges);
+    m5_stream_nuca_align(out_neigh_index, parent_data, 0);
+    m5_stream_nuca_align(out_edges, parent_data,
+                         STREAM_NUCA_IND_ALIGN_EVERY_ELEMENT);
+    m5_stream_nuca_remap();
   }
-  std::cout << "Warm up done.\n";
 #endif
+
+#ifdef GEM_FORGE
+  m5_detail_sim_start();
+#endif
+
+  if (warm_cache > 0) {
+    auto num_nodes = g.num_nodes();
+    auto num_edges = g.num_edges();
+    NodeID **out_neigh_index = g.out_neigh_index();
+    NodeID *out_edges = g.out_edges();
+    NodeID *parent_data = parent.data();
+    gf_warm_array("out_neigh_index", out_neigh_index,
+                  num_nodes * sizeof(out_neigh_index[0]));
+    gf_warm_array("parent", parent_data, num_nodes * sizeof(parent_data[0]));
+    if (warm_cache > 1) {
+      gf_warm_array("out_edges", out_edges, num_edges * sizeof(out_edges[0]));
+    }
+    std::cout << "Warm up done.\n";
+  }
+
+#ifdef GEM_FORGE
   m5_reset_stats(0, 0);
 #endif
 
@@ -276,7 +320,12 @@ int main(int argc, char *argv[]) {
     given_sources = SourceGenerator<Graph>::loadSource(cli.filename());
   }
   SourcePicker<Graph> sp(g, given_sources);
-  auto BFSBound = [&sp](const Graph &g) { return DOBFS(g, sp.PickNext()); };
+  auto BFSBound = [&sp, &cli](const Graph &g) {
+    int alpha = 15;
+    int beta = 18;
+    int warm_cache = cli.warm_cache();
+    return DOBFS(g, sp.PickNext(), alpha, beta, warm_cache);
+  };
   SourcePicker<Graph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const Graph &g, const pvector<NodeID> &parent) {
     return BFSVerifier(g, vsp.PickNext(), parent);
