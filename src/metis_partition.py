@@ -8,7 +8,7 @@ def read_edge_list_as_adjlist(fn):
     min_vertex = -1
     with open(fn) as f:
         for line in f:
-            if line.startswith('#'):
+            if line.startswith('#') or line.startswith('%'):
                 continue
             fields = line.split()
             src = int(fields[0])

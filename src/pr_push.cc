@@ -29,8 +29,11 @@ to ease comparisons to other implementations (often use same algorithm), but
 it is not necesarily the fastest way to implement it. It does perform the
 updates in the pull direction to remove the need for atomics.
 
-CONTROL FLAGS:
+Control flags:
 USE_EDGE_INDEX_OFFSET: Use index_offset instead of the pointer index.
+OMP_SCHEDULE_TYPE: Control how OpenMP schedules the computation.
+SCORES_OFFSET_BYTES: Bytes offset between scores and next_scores.
+USE_DOUBLE_SCORE_T: Use double for scores.
 */
 
 using namespace std;
@@ -45,6 +48,10 @@ typedef float ScoreT;
 #define OMP_SCHEDULE_TYPE schedule(static)
 #endif
 
+#ifndef SCORES_OFFSET_BYTES
+#define SCORES_OFFSET_BYTES 0
+#endif
+
 const float kDamp = 0.85;
 
 pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
@@ -55,7 +62,34 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
   const ScoreT init_score = 1.0f / num_nodes;
   const ScoreT base_score = (1.0f - kDamp) / num_nodes;
 
+  const uint64_t page_bytes = 4096;
+  const uint64_t llc_wrap_bytes = 1024 * 1024;
+  const auto llc_wrap_pages = (llc_wrap_bytes + page_bytes - 1) / page_bytes;
+  auto scores_bytes = num_nodes * sizeof(ScoreT);
+  auto scores_pages = (scores_bytes + page_bytes - 1) / page_bytes;
+  /**
+   * We consider the extra meta data before the allocated area.
+   * One page for next_scores, we added to scores_pages.
+   * One page for gap array, we charge if gap_pages > 1.
+   */
+  scores_pages++;
+  auto scores_remain_pages = scores_pages % llc_wrap_pages;
+  auto offset_pages = (SCORES_OFFSET_BYTES + page_bytes - 1) / page_bytes;
+  auto gap_pages = llc_wrap_pages - scores_remain_pages + offset_pages;
+  printf("Pages: LLC %lu Score %lu Remain %lu Offset %lu Gap %lu.\n",
+         llc_wrap_pages, scores_pages, scores_remain_pages, offset_pages,
+         gap_pages);
+
   pvector<ScoreT> scores(num_nodes, init_score);
+  if (gap_pages > 0) {
+    auto gap_bytes = gap_pages * page_bytes;
+    if (gap_pages > 1) {
+      gap_bytes = (gap_pages - 1) * page_bytes;
+    } else {
+      gap_bytes = page_bytes / 2;
+    }
+    pvector<uint8_t> scores_gap(gap_bytes, 0);
+  }
   pvector<ScoreT> next_scores(num_nodes, 0);
 
   ScoreT *scores_data = scores.data();
@@ -109,32 +143,16 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
 #endif // GEM_FORGE
 
   if (warm_cache > 0) {
-
 #ifdef SHUFFLE_NODES
-#pragma omp parallel for firstprivate(scores_data, next_scores_data,           \
-                                      out_neigh_index, nodes_data)
-#else
-#pragma omp parallel for firstprivate(scores_data, next_scores_data,           \
-                                      out_neigh_index)
-#endif // SHUFFLE_NODES
-    for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(ScoreT)) {
-
-#ifdef SHUFFLE_NODES
-      __attribute__((unused)) volatile NodeID node = nodes_data[n];
-#endif // SHUFFLE_NODES
-
-      __attribute__((unused)) volatile ScoreT score = scores_data[n];
-      __attribute__((unused)) volatile ScoreT next_score = next_scores_data[n];
-      __attribute__((unused)) volatile EdgeIndexT out_neigh =
-          out_neigh_index[n];
-    }
-
+    gf_warm_array("nodes", nodes_data, num_nodes * sizeof(nodes_data[0]));
+#endif
+    gf_warm_array("scores", scores_data, num_nodes * sizeof(scores_data[0]));
+    gf_warm_array("next_scores", next_scores_data,
+                  num_nodes * sizeof(next_scores_data[0]));
+    gf_warm_array("out_neigh_index", out_neigh_index,
+                  num_nodes * sizeof(out_neigh_index[0]));
     if (warm_cache > 1) {
-#pragma omp parallel for firstprivate(out_edges)
-      for (NodeID e = 0; e < num_edges; e += 64 / sizeof(NodeID)) {
-        // We also warm up the out edge list.
-        __attribute__((unused)) volatile NodeID edge = out_edges[e];
-      }
+      gf_warm_array("out_edges", out_edges, num_edges * sizeof(out_edges[0]));
     }
 
     std::cout << "Warm up done.\n";
@@ -179,7 +197,7 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
 
       int64_t n = i;
 
-#endif
+#endif // SHUFFLE_NODES
 
       EdgeIndexT *out_neigh_ptr = out_neigh_index + n;
 

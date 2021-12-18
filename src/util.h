@@ -10,6 +10,10 @@
 
 #include "timer.h"
 
+#ifdef GEM_FORGE
+#include "gem5/m5ops.h"
+#endif
+
 /*
 GAP Benchmark Suite
 Author: Scott Beamer
@@ -93,5 +97,24 @@ template <typename T> T *alignedAllocAndTouch(size_t numElements) {
   }
   return P;
 }
+
+#ifdef GEM_FORGE
+void gf_warm_array(const char *name, void *buffer, uint64_t totalBytes) {
+  uint64_t cachedBytes = m5_stream_nuca_get_cached_bytes(buffer);
+  printf("[GF_WARM] Region %s TotalBytes %lu CachedBytes %lu Cached %.2f%%.\n",
+         name, totalBytes, cachedBytes,
+         static_cast<float>(cachedBytes) / static_cast<float>(totalBytes) *
+             100.f);
+  assert(cachedBytes <= totalBytes);
+#pragma omp parallel for firstprivate(buffer)
+  for (uint64_t i = 0; i < cachedBytes; i += 64) {
+    __attribute__((unused)) volatile uint8_t data =
+        reinterpret_cast<uint8_t *>(buffer)[i];
+  }
+  printf("[GF_WARM] Region %s Warmed %.2f%%.\n", name,
+         static_cast<float>(cachedBytes) / static_cast<float>(totalBytes) *
+             100.f);
+}
+#endif
 
 #endif // UTIL_H_

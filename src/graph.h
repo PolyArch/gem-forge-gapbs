@@ -257,12 +257,15 @@ public:
 
   DestID_ *GenIndexOffset(DestID_ **indexes, DestID_ *base) {
     DestID_ *offsets = alignedAllocAndTouch<DestID_>(num_nodes_ + 1);
+    printf("Start IndexOffset.\n");
+#pragma omp parallel for
     for (NodeID_ i = 0; i < num_nodes_ + 1; ++i) {
       auto index = indexes[i];
       auto offset = index - base;
       assert(offset <= std::numeric_limits<DestID_>::max());
       offsets[i] = offset;
     }
+    printf("Done IndexOffset.\n");
     return offsets;
   }
 
