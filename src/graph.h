@@ -262,7 +262,7 @@ public:
     for (NodeID_ i = 0; i < num_nodes_ + 1; ++i) {
       auto index = indexes[i];
       auto offset = index - base;
-      assert(offset <= std::numeric_limits<DestID_>::max());
+      assert(offset <= std::numeric_limits<NodeID_>::max());
       offsets[i] = offset;
     }
     printf("Done IndexOffset.\n");
