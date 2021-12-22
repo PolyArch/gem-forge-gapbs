@@ -167,7 +167,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
 #ifdef GEM_FORGE
   {
     const auto num_nodes = g.num_nodes();
-    const auto num_edges = g.num_edges();
+    const auto num_edges = g.num_edges_directed();
 #ifdef USE_EDGE_INDEX_OFFSET
     EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
 #else
@@ -183,18 +183,17 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
                           num_edges);
     m5_stream_nuca_align(out_neigh_index, parent_data, 0);
     m5_stream_nuca_align(out_edges, parent_data,
-                         STREAM_NUCA_IND_ALIGN_EVERY_ELEMENT);
+                         m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
     m5_stream_nuca_remap();
   }
 #endif
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
-#endif
 
   if (warm_cache > 0) {
     auto num_nodes = g.num_nodes();
-    auto num_edges = g.num_edges();
+    auto num_edges = g.num_edges_directed();
 #ifdef USE_EDGE_INDEX_OFFSET
     EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
 #else
@@ -211,24 +210,29 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
     std::cout << "Warm up done.\n";
   }
 
-#ifdef GEM_FORGE
   m5_reset_stats(0, 0);
 #endif
 
+  uint64_t iter = 0;
   while (!queue.empty()) {
+
 #ifdef GEM_FORGE
     m5_work_begin(0, 0);
-#else
-    t.Start();
 #endif
+
+    t.Start();
+
     TDStep(g, parent, queue);
     queue.slide_window();
+
 #ifdef GEM_FORGE
     m5_work_end(0, 0);
-#else
-    t.Stop();
-    PrintStep("td", t.Seconds(), queue.size());
 #endif
+
+    t.Stop();
+    printf("%6zu  td%11" PRId64 "  %10.5lfms\n", iter, queue.size(),
+           t.Millisecs());
+    iter++;
   }
 
 #ifdef GEM_FORGE

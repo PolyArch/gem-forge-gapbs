@@ -90,7 +90,8 @@ using BinT = SizedArray<NodeID>;
 #define EdgeIndexT WNode *
 #endif // USE_EDGE_INDEX_OFFSET
 
-pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
+pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta,
+                           int warm_cache) {
   Timer t;
   pvector<WeightT> dist(g.num_nodes(), kDistInf);
   dist[source] = 0;
@@ -100,32 +101,53 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
   size_t frontier_tails[2] = {1, 0};
   frontier[0] = source;
 
+#ifdef USE_EDGE_INDEX_OFFSET
+  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
+#else
+  EdgeIndexT *out_neigh_index = g.out_neigh_index();
+#endif // USE_EDGE_INDEX_OFFSET
+  WNode *out_edges = g.out_edges();
+  auto num_nodes = g.num_nodes();
+  auto num_edges = g.num_edges_directed();
+
+#ifdef GEM_FORGE
+  {
+    WeightT *dist_data = dist.data();
+
+    m5_stream_nuca_region("gap.sssp.dist", dist_data, sizeof(WeightT),
+                          num_nodes);
+    m5_stream_nuca_region("gap.sssp.out_neigh_index", out_neigh_index,
+                          sizeof(EdgeIndexT), num_nodes);
+    m5_stream_nuca_region("gap.sssp.out_edge", out_edges, sizeof(WNode),
+                          num_edges);
+    m5_stream_nuca_align(out_neigh_index, dist_data, 0);
+    m5_stream_nuca_align(out_edges, dist_data,
+                         m5_stream_nuca_encode_ind_align(
+                             offsetof(WNode, v), sizeof(((WNode *)0)->v)));
+    m5_stream_nuca_remap();
+  }
+
+#endif
+
   t.Start();
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
-#ifdef GEM_FORGE_WARM_CACHE
-  {
+  if (warm_cache > 0) {
     WeightT *dist_data = dist.data();
-    WNode **out_neigh_index = g.out_neigh_index();
-    WNode *out_edges = g.out_edges();
-#pragma omp parallel for firstprivate(out_neigh_index)
-    for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(*out_neigh_index)) {
-      __attribute__((unused)) volatile WNode *out_neigh = out_neigh_index[n];
-      __attribute__((unused)) volatile WeightT dist = dist_data[n];
+    gf_warm_array("out_neigh_index", out_neigh_index,
+                  num_nodes * sizeof(out_neigh_index[0]));
+    gf_warm_array("dist", dist_data, num_nodes * sizeof(dist_data[0]));
+    if (warm_cache > 1) {
+      WNode *out_edges = g.out_edges();
+      gf_warm_array("out_edges", out_edges, num_edges * sizeof(out_edges[0]));
     }
-#pragma omp parallel for firstprivate(out_edges)
-    for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(WNode)) {
-      // We also warm up the out edge list.
-      __attribute__((unused)) volatile WNode edge = out_edges[e];
-    }
+    std::cout << "Warm up done.\n";
   }
-  std::cout << "Warm up done.\n";
-#endif
   m5_reset_stats(0, 0);
 #endif
 
-#pragma omp parallel firstprivate(delta)
+#pragma omp parallel firstprivate(delta, out_neigh_index, out_edges)
   {
     vector<BinT> local_bins;
     local_bins.reserve(kMaxNumBin);
@@ -146,13 +168,6 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
         const size_t frontier_size = frontier_tails[iter & 1];
         WeightT *dist_data = dist.data();
         NodeID *frontier_data = frontier.data();
-#ifdef USE_EDGE_INDEX_OFFSET
-        EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
-        auto out_edges = g.out_edges();
-
-#else
-        EdgeIndexT *out_neigh_index = g.out_neigh_index();
-#endif // USE_EDGE_INDEX_OFFSET
 
 #pragma omp for nowait schedule(static)
         for (size_t i = 0; i < frontier_size; i++) {
@@ -247,7 +262,8 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
 #pragma omp single nowait
       {
         t.Stop();
-        PrintStep(curr_bin_index, t.Millisecs(), curr_frontier_tail);
+        printf("%6zu%5d%11" PRId64 "  %10.5lf\n", iter, curr_bin_index,
+               curr_frontier_tail, t.Millisecs());
         t.Start();
         curr_bin_index = kMaxBin;
         curr_frontier_tail = 0;
@@ -337,7 +353,7 @@ int main(int argc, char *argv[]) {
   }
   SourcePicker<WGraph> sp(g, given_sources);
   auto SSSPBound = [&sp, &cli](const WGraph &g) {
-    return DeltaStep(g, sp.PickNext(), cli.delta());
+    return DeltaStep(g, sp.PickNext(), cli.delta(), cli.warm_cache());
   };
   SourcePicker<WGraph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const WGraph &g, const pvector<WeightT> &dist) {

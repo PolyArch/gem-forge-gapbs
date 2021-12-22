@@ -63,7 +63,7 @@ const float kDamp = 0.85;
 pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
                              int warm_cache = 2, int num_threads = 1) {
   const auto num_nodes = g.num_nodes();
-  const auto num_edges = g.num_edges();
+  const auto num_edges = g.num_edges_directed();
   NodeID *out_edges = g.out_edges();
   const ScoreT init_score = 1.0f / num_nodes;
   const ScoreT base_score = (1.0f - kDamp) / num_nodes;
@@ -120,7 +120,7 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
   m5_stream_nuca_align(scores_data, next_scores_data, 0);
   m5_stream_nuca_align(out_neigh_index, next_scores_data, 0);
   m5_stream_nuca_align(out_edges, next_scores_data,
-                       STREAM_NUCA_IND_ALIGN_EVERY_ELEMENT);
+                       m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
   m5_stream_nuca_remap();
 
 #endif // GEM_FORGE
@@ -144,8 +144,6 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
-#endif // GEM_FORGE
-
   if (warm_cache > 0) {
 #ifdef SHUFFLE_NODES
     gf_warm_array("nodes", nodes_data, num_nodes * sizeof(nodes_data[0]));
@@ -161,6 +159,7 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
 
     std::cout << "Warm up done.\n";
   }
+#endif // GEM_FORGE
 
   // Start the threads.
   {

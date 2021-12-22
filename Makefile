@@ -16,7 +16,7 @@ ifneq ($(SERIAL), 1)
 	CXX_FLAGS += $(PAR_FLAG)
 endif
 
-KERNELS = bc bfs bfs_push bfs_push_check bfs_pull bfs_pull_shuffle cc cc_sv pr_pull pr_pull_shuffle pr_push sssp sssp_check tc
+KERNELS = bc bfs bfs_push bfs_push_offset bfs_push_check bfs_pull bfs_pull_shuffle cc cc_sv pr_pull pr_pull_shuffle pr_push sssp sssp_check sssp_inline tc
 SUITE = $(KERNELS) converter gscore bound_dfs nuca_analysis
 
 .PHONY: all
