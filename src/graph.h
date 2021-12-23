@@ -207,13 +207,13 @@ public:
   }
 
   DestID_ **out_neigh_index() const { return out_index_; }
-  DestID_ *out_neigh_index_offset() const { return out_index_offset_; }
+  NodeID_ *out_neigh_index_offset() const { return out_index_offset_; }
 
   DestID_ **in_neigh_index() const {
     static_assert(MakeInverse, "Graph inversion disabled but reading inverse");
     return in_index_;
   }
-  DestID_ *in_neigh_index_offset() const {
+  NodeID_ *in_neigh_index_offset() const {
     static_assert(MakeInverse, "Graph inversion disabled but reading inverse");
     return in_index_offset_;
   }
@@ -233,7 +233,8 @@ public:
     std::cout << "directed edges ("
               << this->num_edges_directed() * sizeof(DestID_) / 1024
               << "kB) for degree: ";
-    std::cout << num_edges_ / num_nodes_ << std::endl;
+    std::cout << static_cast<float>(num_edges_) / static_cast<float>(num_nodes_)
+              << std::endl;
   }
 
   void PrintTopology() const {
@@ -250,14 +251,14 @@ public:
     NodeID_ length = offsets.size();
     DestID_ **index = alignedAllocAndTouch<DestID_ *>(length);
 #pragma omp parallel for
-    for (NodeID_ n = 0; n < length; n++)
+    for (NodeID_ n = 0; n < length; n++) {
       index[n] = neighs + offsets[n];
+    }
     return index;
   }
 
-  DestID_ *GenIndexOffset(DestID_ **indexes, DestID_ *base) {
-    DestID_ *offsets = alignedAllocAndTouch<DestID_>(num_nodes_ + 1);
-    printf("Start IndexOffset.\n");
+  NodeID_ *GenIndexOffset(DestID_ **indexes, DestID_ *base) {
+    NodeID_ *offsets = alignedAllocAndTouch<NodeID_>(num_nodes_ + 1);
 #pragma omp parallel for
     for (NodeID_ i = 0; i < num_nodes_ + 1; ++i) {
       auto index = indexes[i];
@@ -286,10 +287,10 @@ private:
   int64_t num_nodes_;
   int64_t num_edges_;
   DestID_ **out_index_ = nullptr;
-  DestID_ *out_index_offset_ = nullptr;
+  NodeID_ *out_index_offset_ = nullptr;
   DestID_ *out_neighbors_ = nullptr;
   DestID_ **in_index_ = nullptr;
-  DestID_ *in_index_offset_ = nullptr;
+  NodeID_ *in_index_offset_ = nullptr;
   DestID_ *in_neighbors_ = nullptr;
 };
 

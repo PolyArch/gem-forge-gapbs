@@ -182,7 +182,7 @@ public:
                DestID_ **neighs) {
     pvector<NodeID_> degrees = CountDegrees(el, transpose);
     pvector<SGOffset> offsets = ParallelPrefixSum(degrees);
-    *neighs = alignedAllocAndTouch<DestID_>(num_nodes_);
+    *neighs = alignedAllocAndTouch<DestID_>(offsets[num_nodes_]);
     *index = CSRGraph<NodeID_, DestID_>::GenIndex(offsets, *neighs);
 #pragma omp parallel for
     for (auto it = el.begin(); it < el.end(); it++) {
@@ -202,11 +202,13 @@ public:
     t.Start();
     if (num_nodes_ == -1)
       num_nodes_ = FindMaxNodeID(el) + 1;
-    if (needs_weights_)
+    if (needs_weights_) {
       Generator<NodeID_, DestID_, WeightT_>::InsertWeights(el);
+    }
     MakeCSR(el, false, &index, &neighs);
-    if (!symmetrize_ && invert)
+    if (!symmetrize_ && invert) {
       MakeCSR(el, true, &inv_index, &inv_neighs);
+    }
     t.Stop();
     PrintTime("Build Time", t.Seconds());
     if (symmetrize_)

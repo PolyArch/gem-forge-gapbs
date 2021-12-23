@@ -6,6 +6,7 @@ converter
 pr
 sssp
 tc
+src/__pycache__
 
 test/out/*.out
 

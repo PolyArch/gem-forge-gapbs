@@ -80,13 +80,18 @@ def analyze_partition(adjlist, edge_cuts, parts):
         print(f'  Part {pid} Nodes {len(part)} InternalNodes {internal_nodes}')
     print(f'TotalInterlNodes {total_internal_nodes} Ratio {total_internal_nodes / len(adjlist)}')
 
-def dump_adjlist(adjlist, prefix):
+def dump_adjlist(adjlist, prefix, symmetry):
     el_fn = f'{prefix}.el'
     with open(el_fn, 'w') as f:
         for u in range(len(adjlist)):
             for v in adjlist[u]:
                 f.write(f'{u} {v}\n')
-    os.system(f'./converter -f {el_fn} -b {prefix}')
+    if symmetry:
+        os.system(f'./converter -f {el_fn} -b {prefix} -s')
+        os.system(f'./converter -f {el_fn} -b {prefix} -w -s')
+    else:
+        os.system(f'./converter -f {el_fn} -b {prefix}')
+        os.system(f'./converter -f {el_fn} -b {prefix} -w')
 
 def dump_partition(original_fn, n_parts, adjlist, parts):
 
@@ -176,14 +181,18 @@ def bounded_dfs(adjlist, bounded_depth):
 def main(argv):
     fn = argv[1]
     nparts = int(argv[2])
+    symmetry = False
+    if len(argv) > 3:
+        if argv[3] == '-s':
+            symmetry = True
     adjlist = read_edge_list_as_adjlist(fn)
     # First dump the original version and pick up a source.
     prefix = fn[:fn.rfind('.')]
-    dump_adjlist(adjlist, prefix)
+    # dump_adjlist(adjlist, prefix, symmetry)
 
     # edge_cuts, parts = metis.part_graph(adjlist, nparts)
-    # # edge_cuts, parts = bounded_dfs(adjlist, nparts)
-    # analyze_partition(adjlist, edge_cuts, parts)
+    edge_cuts, parts = bounded_dfs(adjlist, nparts)
+    analyze_partition(adjlist, edge_cuts, parts)
     # dump_partition(fn, nparts, adjlist, parts)
 
 

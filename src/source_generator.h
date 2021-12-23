@@ -53,7 +53,7 @@ private:
   NodeID pickSource() {
 
     // Perform 10 BFS to pick up a suitable root.
-    const size_t numIters = 20;
+    const size_t numIters = 100;
 
     auto numNodes = g_.num_nodes();
     NodeID pickedSource = 0;

@@ -44,19 +44,26 @@ const float kDamp = 0.85;
 std::vector<uint64_t> edge_lengths;
 #endif
 
-pvector<ScoreT> PageRankPull(const Graph &g, int max_iters,
+#ifdef USE_EDGE_INDEX_OFFSET
+#define EdgeIndexT NodeID
+#else
+#define EdgeIndexT NodeID *
+#endif // USE_EDGE_INDEX_OFFSET
+
+pvector<ScoreT> PageRankPull(const Graph &g, int max_iters, int warm_cache,
                              double epsilon = 0) {
-  const ScoreT init_score = 1.0f / g.num_nodes();
-  const ScoreT base_score = (1.0f - kDamp) / g.num_nodes();
-  pvector<ScoreT> scores(g.num_nodes(), init_score);
-  pvector<ScoreT> outgoing_contribs(g.num_nodes());
+  const auto num_nodes = g.num_nodes();
+  const auto num_edges = g.num_edges_directed();
+  NodeID *in_edges = g.in_edges();
+
+  const ScoreT init_score = 1.0f / num_nodes;
+  const ScoreT base_score = (1.0f - kDamp) / num_nodes;
+  pvector<ScoreT> scores(num_nodes, init_score);
+  pvector<ScoreT> out_contribs(num_nodes);
   ScoreT *scores_data = scores.data();
-  ScoreT *outgoing_contribs_data = outgoing_contribs.data();
-  NodeID **in_neigh_index = g.in_neigh_index();
-  NodeID **out_neigh_index = g.out_neigh_index();
+  ScoreT *out_contribs_data = out_contribs.data();
 
   // Shuffle the nodes.
-  int64_t num_nodes = g.num_nodes();
   pvector<NodeID> nodes(num_nodes);
   for (NodeID i = 0; i < num_nodes; ++i) {
     nodes[i] = i;
@@ -72,39 +79,61 @@ pvector<ScoreT> PageRankPull(const Graph &g, int max_iters,
 
   // Precompute the out_degree.
   pvector<NodeID> out_degrees(num_nodes);
-  for (NodeID i = 0; i < num_nodes; ++i) {
-    NodeID **out_neigh_ptr = out_neigh_index + i;
-    NodeID *out_neigh = out_neigh_ptr[0];
-    NodeID *out_neigh_next = out_neigh_ptr[1];
-    int64_t out_degree = out_neigh_next - out_neigh;
-    out_degrees[i] = out_degree;
+  {
+    NodeID **out_neigh_index = g.out_neigh_index();
+    for (NodeID i = 0; i < num_nodes; ++i) {
+      NodeID **out_neigh_ptr = out_neigh_index + i;
+      NodeID *out_neigh = out_neigh_ptr[0];
+      NodeID *out_neigh_next = out_neigh_ptr[1];
+      int64_t out_degree = out_neigh_next - out_neigh;
+      out_degrees[i] = out_degree;
+    }
   }
   NodeID *out_degrees_data = out_degrees.data();
 
+#ifdef USE_EDGE_INDEX_OFFSET
+  EdgeIndexT *in_neigh_index = g.in_neigh_index_offset();
+#else
+  EdgeIndexT *in_neigh_index = g.in_neigh_index();
+#endif // USE_EDGE_INDEX_OFFSET
+
+#ifdef GEM_FORGE
+
+  m5_stream_nuca_region("gap.pr_pull.score", scores_data, sizeof(ScoreT),
+                        num_nodes);
+  m5_stream_nuca_region("gap.pr_pull.out_contrib", out_contribs_data,
+                        sizeof(ScoreT), num_nodes);
+  m5_stream_nuca_region("gap.pr_pull.out_degree", out_degrees_data,
+                        sizeof(NodeID), num_nodes);
+  m5_stream_nuca_region("gap.pr_pull.in_neigh_index", in_neigh_index,
+                        sizeof(EdgeIndexT), num_nodes);
+  m5_stream_nuca_region("gap.pr_pull.in_edges", in_edges, sizeof(NodeID),
+                        num_edges);
+  m5_stream_nuca_align(scores_data, out_contribs_data, 0);
+  m5_stream_nuca_align(out_degrees_data, out_contribs_data, 0);
+  m5_stream_nuca_align(in_neigh_index, out_contribs_data, 0);
+  m5_stream_nuca_align(in_edges, out_contribs_data,
+                       m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
+  m5_stream_nuca_remap();
+
+#endif
+
 #ifdef GEM_FORGE
   m5_detail_sim_start();
-#ifdef GEM_FORGE_WARM_CACHE
-  {
-    NodeID *in_edges = g.in_edges();
-#pragma omp parallel for firstprivate(nodes_data, scores_data,                 \
-                                      outgoing_contribs_data,                  \
-                                      out_degrees_data, in_neigh_index)
-    for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(ScoreT)) {
-      __attribute__((unused)) volatile NodeID node = nodes_data[n];
-      __attribute__((unused)) volatile ScoreT score = scores_data[n];
-      __attribute__((unused)) volatile ScoreT outgoing_contrib =
-          outgoing_contribs_data[n];
-      __attribute__((unused)) volatile NodeID out_degree = out_degrees_data[n];
-      __attribute__((unused)) volatile NodeID *in_neigh = in_neigh_index[n];
-    }
-#pragma omp parallel for firstprivate(in_edges)
-    for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(NodeID)) {
-      // We also warm up the out edge list.
-      __attribute__((unused)) volatile NodeID edge = in_edges[e];
+  if (warm_cache > 0) {
+    gf_warm_array("nodes", nodes_data, num_nodes * sizeof(nodes_data[0]));
+    gf_warm_array("scores", scores_data, num_nodes * sizeof(scores_data[0]));
+    gf_warm_array("out_contrib", out_contribs_data,
+                  num_nodes * sizeof(out_contribs_data[0]));
+    gf_warm_array("out_degree", out_degrees_data,
+                  num_nodes * sizeof(out_degrees_data[0]));
+    gf_warm_array("in_neigh_index", in_neigh_index,
+                  num_nodes * sizeof(in_neigh_index[0]));
+    if (warm_cache > 1) {
+      gf_warm_array("in_edges", in_edges, num_edges * sizeof(in_edges[0]));
     }
   }
   std::cout << "Warm up done.\n";
-#endif
   m5_reset_stats(0, 0);
 #endif
 
@@ -116,12 +145,19 @@ pvector<ScoreT> PageRankPull(const Graph &g, int max_iters,
 
 #ifndef DISABLE_KERNEL_1
 #pragma omp parallel for schedule(static)                                      \
-    firstprivate(scores_data, out_degrees_data, outgoing_contribs_data)
+    firstprivate(scores_data, out_degrees_data, out_contribs_data)
     for (NodeID n = 0; n < g.num_nodes(); n++) {
+
+#pragma ss stream_name "gap.pr_pull.contrib.score.ld"
       ScoreT score = scores_data[n];
+
+#pragma ss stream_name "gap.pr_pull.contrib.degree.ld"
       NodeID out_degree = out_degrees_data[n];
-      ScoreT outgoing_contrib = score / out_degree;
-      outgoing_contribs_data[n] = outgoing_contrib;
+
+      ScoreT out_contrib = score / out_degree;
+
+#pragma ss stream_name "gap.pr_pull.contrib.contrib.st"
+      out_contribs_data[n] = out_contrib;
     }
 #endif
 
@@ -133,13 +169,27 @@ pvector<ScoreT> PageRankPull(const Graph &g, int max_iters,
     double error = 0;
 #ifndef DISABLE_KERNEL2
 #pragma omp parallel for schedule(static) reduction(+ : error) \
-    firstprivate(nodes_data, scores_data, in_neigh_index, outgoing_contribs_data, base_score, kDamp)
+    firstprivate(nodes_data, scores_data, in_edges, in_neigh_index, out_contribs_data, base_score, kDamp)
     for (int64_t x = 0; x < g.num_nodes(); ++x) {
+
+#pragma ss stream_name "gap.pr_pull.acc.node.ld"
       NodeID u = nodes_data[x];
-      NodeID **in_neigh_ptr = in_neigh_index + u;
-      NodeID *in_neigh = in_neigh_ptr[0];
-      NodeID *in_neigh_next = in_neigh_ptr[1];
-      int64_t in_degree = in_neigh_next - in_neigh;
+
+      EdgeIndexT *in_neigh_ptr = in_neigh_index + u;
+
+#pragma ss stream_name "gap.pr_pull.acc.in_begin.ld"
+      EdgeIndexT in_begin = in_neigh_ptr[0];
+
+#pragma ss stream_name "gap.pr_pull.acc.in_end.ld"
+      EdgeIndexT in_end = in_neigh_ptr[1];
+
+#ifdef USE_EDGE_INDEX_OFFSET
+      NodeID *in_ptr = in_edges + in_begin;
+#else
+      NodeID *in_ptr = in_begin;
+#endif
+
+      int64_t in_degree = in_end - in_begin;
 #ifdef PROFILE_EDGES
       {
         size_t bucket = 0;
@@ -156,9 +206,16 @@ pvector<ScoreT> PageRankPull(const Graph &g, int max_iters,
 #endif
       ScoreT incoming_total = 0;
       for (int64_t i = 0; i < in_degree; ++i) {
-        NodeID v = in_neigh[i];
-        incoming_total += outgoing_contribs_data[v];
+
+#pragma ss stream_name "gap.pr_pull.acc.in_v.ld"
+        NodeID v = in_ptr[i];
+
+#pragma ss stream_name "gap.pr_pull.acc.contrib.ld"
+        ScoreT contrib = out_contribs_data[v];
+
+        incoming_total += contrib;
       }
+
       ScoreT old_score = scores_data[u];
       ScoreT new_score = base_score + kDamp * incoming_total;
       scores_data[u] = new_score;
@@ -203,9 +260,9 @@ bool PRVerifier(const Graph &g, const pvector<ScoreT> &scores,
   pvector<ScoreT> incomming_sums(g.num_nodes(), 0);
   double error = 0;
   for (NodeID u : g.vertices()) {
-    ScoreT outgoing_contrib = scores[u] / g.out_degree(u);
+    ScoreT out_contrib = scores[u] / g.out_degree(u);
     for (NodeID v : g.out_neigh(u))
-      incomming_sums[v] += outgoing_contrib;
+      incomming_sums[v] += out_contrib;
   }
   for (NodeID n : g.vertices()) {
     error += fabs(base_score + kDamp * incomming_sums[n] - scores[n]);
@@ -231,7 +288,7 @@ int main(int argc, char *argv[]) {
   Builder b(cli);
   Graph g = b.MakeGraph();
   auto PRBound = [&cli](const Graph &g) {
-    return PageRankPull(g, cli.max_iters(), cli.tolerance());
+    return PageRankPull(g, cli.max_iters(), cli.warm_cache(), cli.tolerance());
   };
   auto VerifierBound = [&cli](const Graph &g, const pvector<ScoreT> &scores) {
     return PRVerifier(g, scores, cli.tolerance());
