@@ -176,11 +176,11 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
     NodeID *out_edges = g.out_edges();
     NodeID *parent_data = parent.data();
     m5_stream_nuca_region("gap.bfs_push.parent", parent_data, sizeof(NodeID),
-                          num_nodes);
+                          num_nodes, 0, 0);
     m5_stream_nuca_region("gap.bfs_push.out_neigh_index", out_neigh_index,
-                          sizeof(EdgeIndexT), num_nodes);
+                          sizeof(EdgeIndexT), num_nodes, 0, 0);
     m5_stream_nuca_region("gap.bfs_push.out_edge", out_edges, sizeof(NodeID),
-                          num_edges);
+                          num_edges, 0, 0);
     m5_stream_nuca_align(out_neigh_index, parent_data, 0);
     m5_stream_nuca_align(out_edges, parent_data,
                          m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));

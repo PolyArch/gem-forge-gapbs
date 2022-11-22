@@ -108,8 +108,8 @@ pvector<NodeID> InitParent(const Graph &g) {
   return parent;
 }
 
-pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
-                      int beta = 18) {
+pvector<NodeID> DOBFS(const Graph &g, NodeID source, int warm_cache,
+                      int alpha = 15, int beta = 18) {
   PrintStep("Source", static_cast<int64_t>(source));
   Timer t;
   t.Start();
@@ -127,8 +127,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
-#ifdef GEM_FORGE_WARM_CACHE
-  {
+  if (warm_cache > 0) {
     NodeID **out_neigh_index = g.out_neigh_index();
     NodeID *out_edges = g.out_edges();
     NodeID *parent_data = parent.data();
@@ -137,14 +136,15 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
       __attribute__((unused)) volatile NodeID *out_neigh = out_neigh_index[n];
       __attribute__((unused)) volatile NodeID parent = parent_data[n];
     }
+    if (warm_cache > 1) {
 #pragma omp parallel for firstprivate(out_edges)
-    for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(NodeID)) {
-      // We also warm up the out edge list.
-      __attribute__((unused)) volatile NodeID edge = out_edges[e];
+      for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(NodeID)) {
+        // We also warm up the out edge list.
+        __attribute__((unused)) volatile NodeID edge = out_edges[e];
+      }
     }
+    std::cout << "Warm up done.\n";
   }
-  std::cout << "Warm up done.\n";
-#endif
   m5_reset_stats(0, 0);
 #endif
 
@@ -261,7 +261,9 @@ int main(int argc, char *argv[]) {
     given_sources = SourceGenerator<Graph>::loadSource(cli.filename());
   }
   SourcePicker<Graph> sp(g, given_sources);
-  auto BFSBound = [&sp](const Graph &g) { return DOBFS(g, sp.PickNext()); };
+  auto BFSBound = [&sp, &cli](const Graph &g) {
+    return DOBFS(g, sp.PickNext(), cli.warm_cache());
+  };
   SourcePicker<Graph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const Graph &g, const pvector<NodeID> &parent) {
     return BFSVerifier(g, vsp.PickNext(), parent);

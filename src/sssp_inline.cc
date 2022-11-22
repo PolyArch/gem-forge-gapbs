@@ -115,11 +115,11 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta,
     WeightT *dist_data = dist.data();
 
     m5_stream_nuca_region("gap.sssp.dist", dist_data, sizeof(WeightT),
-                          num_nodes);
+                          num_nodes, 0, 0);
     m5_stream_nuca_region("gap.sssp.out_neigh_index", out_neigh_index,
-                          sizeof(EdgeIndexT), num_nodes);
+                          sizeof(EdgeIndexT), num_nodes, 0, 0);
     m5_stream_nuca_region("gap.sssp.out_edge", out_edges, sizeof(WNode),
-                          num_edges);
+                          num_edges, 0, 0);
     m5_stream_nuca_align(out_neigh_index, dist_data, 0);
     m5_stream_nuca_align(out_edges, dist_data,
                          m5_stream_nuca_encode_ind_align(

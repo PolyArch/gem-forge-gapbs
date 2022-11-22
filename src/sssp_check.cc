@@ -122,7 +122,8 @@ __attribute__((noinline)) void RelaxEdges(const WGraph &g, NodeID u,
   }
 }
 
-pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
+pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta,
+                           int warm_cahce) {
   Timer t;
   pvector<WeightT> dist(g.num_nodes(), kDistInf);
   dist[source] = 0;
@@ -135,8 +136,7 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
-#ifdef GEM_FORGE_WARM_CACHE
-  {
+  if (warm_cahce > 0) {
     WNode **out_neigh_index = g.out_neigh_index();
     WNode *out_edges = g.out_edges();
     WeightT *dist_data = dist.data();
@@ -145,14 +145,15 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
       __attribute__((unused)) volatile WNode *out_neigh = out_neigh_index[n];
       __attribute__((unused)) volatile WeightT dist = dist_data[n];
     }
+    if (warm_cahce > 1) {
 #pragma omp parallel for firstprivate(out_edges)
-    for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(WNode)) {
-      // We also warm up the out edge list.
-      __attribute__((unused)) volatile WNode edge = out_edges[e];
+      for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(WNode)) {
+        // We also warm up the out edge list.
+        __attribute__((unused)) volatile WNode edge = out_edges[e];
+      }
     }
   }
   std::cout << "Warm up done.\n";
-#endif
   m5_reset_stats(0, 0);
 #endif
 
@@ -298,7 +299,7 @@ int main(int argc, char *argv[]) {
   }
   SourcePicker<WGraph> sp(g, given_sources);
   auto SSSPBound = [&sp, &cli](const WGraph &g) {
-    return DeltaStep(g, sp.PickNext(), cli.delta());
+    return DeltaStep(g, sp.PickNext(), cli.delta(), cli.warm_cache());
   };
   SourcePicker<WGraph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const WGraph &g, const pvector<WeightT> &dist) {

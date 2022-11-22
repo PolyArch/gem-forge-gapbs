@@ -99,16 +99,19 @@ pvector<ScoreT> PageRankPull(const Graph &g, int max_iters, int warm_cache,
 
 #ifdef GEM_FORGE
 
+  m5_stream_nuca_region("gap.pr_pull.nodes", nodes_data, sizeof(NodeID),
+                        num_nodes, 0, 0);
   m5_stream_nuca_region("gap.pr_pull.score", scores_data, sizeof(ScoreT),
-                        num_nodes);
+                        num_nodes, 0, 0);
   m5_stream_nuca_region("gap.pr_pull.out_contrib", out_contribs_data,
-                        sizeof(ScoreT), num_nodes);
+                        sizeof(ScoreT), num_nodes, 0, 0);
   m5_stream_nuca_region("gap.pr_pull.out_degree", out_degrees_data,
-                        sizeof(NodeID), num_nodes);
+                        sizeof(NodeID), num_nodes, 0, 0);
   m5_stream_nuca_region("gap.pr_pull.in_neigh_index", in_neigh_index,
-                        sizeof(EdgeIndexT), num_nodes);
+                        sizeof(EdgeIndexT), num_nodes, 0, 0);
   m5_stream_nuca_region("gap.pr_pull.in_edges", in_edges, sizeof(NodeID),
-                        num_edges);
+                        num_edges, 0, 0);
+  m5_stream_nuca_align(nodes_data, out_contribs_data, 0);
   m5_stream_nuca_align(scores_data, out_contribs_data, 0);
   m5_stream_nuca_align(out_degrees_data, out_contribs_data, 0);
   m5_stream_nuca_align(in_neigh_index, out_contribs_data, 0);
@@ -216,6 +219,7 @@ pvector<ScoreT> PageRankPull(const Graph &g, int max_iters, int warm_cache,
         incoming_total += contrib;
       }
 
+#pragma ss stream_name "gap.pr_pull.acc.old_score.ld"
       ScoreT old_score = scores_data[u];
       ScoreT new_score = base_score + kDamp * incoming_total;
       scores_data[u] = new_score;

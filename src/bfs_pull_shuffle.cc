@@ -48,31 +48,70 @@ them in parent array as negative numbers. Thus the encoding of parent is:
 
 using namespace std;
 
+#ifdef USE_EDGE_INDEX_OFFSET
+#define EdgeIndexT NodeID
+#else
+#define EdgeIndexT NodeID *
+#endif // USE_EDGE_INDEX_OFFSET
+
 int64_t BUStep(const Graph &g, const pvector<NodeID> &nodes,
                pvector<NodeID> &parent, pvector<NodeID> &next_parent) {
   int64_t awake_count = 0;
-  NodeID **graph_in_neigh_index = g.in_neigh_index();
+
+#ifdef USE_EDGE_INDEX_OFFSET
+  EdgeIndexT *in_neigh_index = g.in_neigh_index_offset();
+#else
+  EdgeIndexT *in_neigh_index = g.in_neigh_index();
+#endif // USE_EDGE_INDEX_OFFSET
+
   auto *nodes_v = nodes.data();
   auto *parent_v = parent.data();
   auto *next_parent_v = next_parent.data();
+  auto *in_edges = g.in_edges();
+
 #pragma omp parallel for schedule(static) reduction(+ : awake_count) \
-  firstprivate(graph_in_neigh_index, nodes_v, parent_v, next_parent_v)
+  firstprivate(in_neigh_index, in_edges, nodes_v, parent_v, next_parent_v)
   for (int64_t x = 0; x < g.num_nodes(); ++x) {
+
+#pragma ss stream_name "gap.bfs_pull.node.ld"
     NodeID u = nodes_v[x];
+
     // Explicit write this to avoid u + 1 and misplaced stream_step.
-    NodeID *const *in_neigh_index = graph_in_neigh_index + u;
-    const NodeID *in_neigh_begin = in_neigh_index[0];
-    const NodeID *in_neigh_end = in_neigh_index[1];
-    const auto N = in_neigh_end - in_neigh_begin;
-    if (parent[u] < 0) {
+    EdgeIndexT *in_neigh_ptr = in_neigh_index + u;
+
+#pragma ss stream_name "gap.bfs_pull.in_begin.ld"
+    EdgeIndexT in_begin = in_neigh_ptr[0];
+
+#pragma ss stream_name "gap.bfs_pull.in_end.ld"
+    EdgeIndexT in_end = in_neigh_ptr[1];
+
+#ifdef USE_EDGE_INDEX_OFFSET
+    NodeID *in_ptr = in_edges + in_begin;
+#else
+    NodeID *in_ptr = in_begin;
+#endif
+
+    const auto in_degree = in_end - in_begin;
+
+#pragma ss stream_name "gap.bfs_pull.parent_u.ld"
+    auto parent_u = parent_v[u];
+
+    if (parent_u < 0 && in_degree > 0) {
       // Better to reduce from zero.
       NodeID p = 0;
-      for (int64_t i = 0; i < N; ++i) {
-        NodeID v = in_neigh_begin[i];
+      for (int64_t i = 0; i < in_degree; ++i) {
+
+#pragma ss stream_name "gap.bfs_pull.in_v.ld"
+        NodeID v = in_ptr[i];
+
+#pragma ss stream_name "gap.bfs_pull.parent_v.ld"
         NodeID vParent = parent_v[v];
+
         p = (vParent > -1) ? (v + 1) : p;
       }
+
       if (p != 0) {
+#pragma ss stream_name "gap.bfs_pull.next_parent.st"
         next_parent_v[u] = p - 1;
         awake_count++;
       }
@@ -82,7 +121,11 @@ int64_t BUStep(const Graph &g, const pvector<NodeID> &nodes,
 // Copy next_parent into parent.
 #pragma omp parallel for schedule(static) firstprivate(parent_v, next_parent_v)
   for (NodeID u = 0; u < g.num_nodes(); u++) {
-    parent_v[u] = next_parent_v[u];
+#pragma ss stream_name "gap.bfs_pull.copy.next_parent.ld"
+    auto next_parent = next_parent_v[u];
+
+#pragma ss stream_name "gap.bfs_pull.copy.parent.st"
+    parent_v[u] = next_parent;
   }
   return awake_count;
 }
@@ -111,8 +154,8 @@ pvector<NodeID> InitShuffledNodes(const Graph &g) {
   return nodes;
 }
 
-pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
-                      int beta = 18) {
+pvector<NodeID> DOBFS(const Graph &g, NodeID source, int warm_cache,
+                      int alpha = 15, int beta = 18) {
   PrintStep("Source", static_cast<int64_t>(source));
   Timer t;
   t.Start();
@@ -124,48 +167,70 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
   parent[source] = source;
   next_parent[source] = source;
 
+  const auto num_nodes = g.num_nodes();
+  const auto num_edges = g.num_edges_directed();
+  NodeID *in_edges = g.in_edges();
+  NodeID *nodes_data = nodes.data();
+  NodeID *parent_data = parent.data();
+  NodeID *next_parent_data = next_parent.data();
+
+#ifdef USE_EDGE_INDEX_OFFSET
+  EdgeIndexT *in_neigh_index = g.in_neigh_index_offset();
+#else
+  EdgeIndexT *in_neigh_index = g.in_neigh_index();
+#endif // USE_EDGE_INDEX_OFFSET
+
+#ifdef GEM_FORGE
+  m5_stream_nuca_region("gap.bfs_pull.node", nodes_data, sizeof(NodeID),
+                        num_nodes, 0, 0);
+  m5_stream_nuca_region("gap.bfs_pull.parent", parent_data, sizeof(NodeID),
+                        num_nodes, 0, 0);
+  m5_stream_nuca_region("gap.bfs_pull.next_degree", next_parent_data,
+                        sizeof(NodeID), num_nodes, 0, 0);
+  m5_stream_nuca_region("gap.bfs_pull.in_neigh_index", in_neigh_index,
+                        sizeof(EdgeIndexT), num_nodes, 0, 0);
+  m5_stream_nuca_region("gap.bfs_pull.in_edges", in_edges, sizeof(NodeID),
+                        num_edges, 0, 0);
+  m5_stream_nuca_align(parent_data, next_parent_data, 0);
+  m5_stream_nuca_align(in_neigh_index, next_parent_data, 0);
+  m5_stream_nuca_align(in_edges, next_parent_data,
+                       m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
+  m5_stream_nuca_remap();
+#endif
+
 #ifdef GEM_FORGE
   m5_detail_sim_start();
-#ifdef GEM_FORGE_WARM_CACHE
-  {
-    NodeID **in_neigh_index = g.in_neigh_index();
-    NodeID *in_edges = g.in_edges();
-    NodeID *nodes_data = nodes.data();
-    NodeID *parent_data = parent.data();
-    NodeID *next_parent_data = parent.data();
-#pragma omp parallel for firstprivate(in_neigh_index)
-    for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(*in_neigh_index)) {
-      __attribute__((unused)) volatile NodeID *in_neigh = in_neigh_index[n];
-      __attribute__((unused)) volatile NodeID node = nodes_data[n];
-      __attribute__((unused)) volatile NodeID parent = parent_data[n];
-      __attribute__((unused)) volatile NodeID next_parent = next_parent_data[n];
-    }
-#pragma omp parallel for firstprivate(in_edges)
-    for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(NodeID)) {
-      // We also warm up the out edge list.
-      __attribute__((unused)) volatile NodeID edge = in_edges[e];
+  if (warm_cache > 0) {
+    gf_warm_array("nodes", nodes_data, num_nodes * sizeof(nodes_data[0]));
+    gf_warm_array("parents", parent_data, num_nodes * sizeof(parent_data[0]));
+    gf_warm_array("next_parents", next_parent_data,
+                  num_nodes * sizeof(next_parent_data[0]));
+    gf_warm_array("in_neigh_index", in_neigh_index,
+                  num_nodes * sizeof(in_neigh_index[0]));
+    if (warm_cache > 1) {
+      gf_warm_array("in_edges", in_edges, num_edges * sizeof(in_edges[0]));
     }
   }
   std::cout << "Warm up done.\n";
-#endif
   m5_reset_stats(0, 0);
 #endif
 
   PrintStep("e", t.Seconds());
   int64_t awake_count = 1;
+  uint64_t iter = 0;
   while (awake_count > 0) {
 #ifdef GEM_FORGE
     m5_work_begin(0, 0);
-#else
-    t.Start();
 #endif
+    t.Start();
     awake_count = BUStep(g, nodes, parent, next_parent);
 #ifdef GEM_FORGE
     m5_work_end(0, 0);
-#else
-    t.Stop();
-    PrintStep("bu", t.Seconds(), awake_count);
 #endif
+    t.Stop();
+    printf("%6zu bu%11" PRId64 "  %10.5lfms\n", iter, awake_count,
+           t.Millisecs());
+    iter++;
   }
   PrintStep("c", t.Seconds());
 
@@ -175,9 +240,10 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
 #endif
 
 #pragma omp parallel for
-  for (NodeID n = 0; n < g.num_nodes(); n++)
+  for (NodeID n = 0; n < g.num_nodes(); n++) {
     if (parent[n] < -1)
       parent[n] = -1;
+  }
   return parent;
 }
 
@@ -266,7 +332,9 @@ int main(int argc, char *argv[]) {
     given_sources = SourceGenerator<Graph>::loadSource(cli.filename());
   }
   SourcePicker<Graph> sp(g, given_sources);
-  auto BFSBound = [&sp](const Graph &g) { return DOBFS(g, sp.PickNext()); };
+  auto BFSBound = [&sp, &cli](const Graph &g) {
+    return DOBFS(g, sp.PickNext(), cli.warm_cache());
+  };
   SourcePicker<Graph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const Graph &g, const pvector<NodeID> &parent) {
     return BFSVerifier(g, vsp.PickNext(), parent);
