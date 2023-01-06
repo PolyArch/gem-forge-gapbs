@@ -79,7 +79,7 @@ public:
   void reserve(size_t num_elements) {
     if (num_elements > capacity()) {
       T_ *new_range = reinterpret_cast<iterator>(
-          aligned_alloc(AlignBytes, sizeof(T_) * num_elements));
+          aligned_alloc(alignBytes, sizeof(T_) * num_elements));
 #pragma omp parallel for
       for (size_t i = 0; i < size(); i++) {
         new_range[i] = start_[i];

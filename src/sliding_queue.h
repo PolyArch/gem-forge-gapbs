@@ -21,13 +21,13 @@ Double-buffered queue so appends aren't seen until SlideWindow() called
 template <typename T> class QueueBuffer;
 
 template <typename T> class SlidingQueue {
+public:
   T *shared;
   size_t shared_in;
   size_t shared_out_start;
   size_t shared_out_end;
   friend class QueueBuffer<T>;
 
-public:
   explicit SlidingQueue(size_t shared_size) {
     shared = new T[shared_size];
     reset();

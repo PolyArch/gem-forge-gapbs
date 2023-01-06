@@ -69,6 +69,11 @@ Inline RelaxEdges.
 
 Control flags:
 USE_EDGE_INDEX_OFFSET: Use index_offset instead of the pointer index.
+USE_SPATIAL_QUEUE: Use a spatially localized queue instead of default thread
+    localized queue.
+    So far we assume that there N banks, and vertexes are divided into
+    N clusters with one cluster per bank.
+*
 */
 
 using namespace std;

@@ -75,6 +75,12 @@ typedef int32_t SGID;
 typedef EdgePair<SGID> SGEdge;
 typedef int64_t SGOffset;
 
+/**
+ * Control the layout of edge list.
+ * Default: CSR format.
+ * Aligned: Each vertex's edge list start aligns with specified granularity.
+ */
+
 template <class NodeID_, class DestID_ = NodeID_, bool MakeInverse = true>
 class CSRGraph {
   // Used for *non-negative* offsets within a neighborhood

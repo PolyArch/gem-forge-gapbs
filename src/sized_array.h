@@ -70,12 +70,13 @@ public:
 
   bool empty() const { return this->num_elements == 0; }
 
-  size_t size() const { return this->num_elements; }
+  int32_t size() const { return this->num_elements; }
 
-private:
-  size_t capacity;
+  void clear() { this->num_elements = 0; }
+
+  int32_t capacity;
   iterator buffer;
-  size_t num_elements;
+  int32_t num_elements;
 
   void release() {
     free(this->buffer);

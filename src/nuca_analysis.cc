@@ -73,6 +73,12 @@ public:
     }
   }
 
+  void resetPrevBanks() {
+    this->prev_base_bank = -1;
+    this->prev_mid_bank = -1;
+    this->prev_freq_bank = -1;
+  }
+
   void print() {
     printf("base_hops %lu mid_hops %lu freq_hops %lu.\n", this->base_hops,
            this->mid_hops, this->freq_hops);
@@ -90,6 +96,9 @@ public:
     uint64_t freq_hops = 0;
     uint64_t freq_edge_bytes_per_bank_avg = 0;
     uint64_t freq_edge_bytes_per_bank_std = 0;
+    uint64_t base_ptr_chase_hops = 0;
+    uint64_t mid_ptr_chase_hops = 0;
+    uint64_t freq_ptr_chase_hops = 0;
   };
 
   Result getResult() const {
@@ -104,6 +113,10 @@ public:
     ret.freq_edge_bytes_per_bank_avg = this->computeAvg(this->freq_banks);
     ret.freq_edge_bytes_per_bank_std =
         this->computeStdVar(this->freq_banks, ret.freq_edge_bytes_per_bank_avg);
+
+    ret.base_ptr_chase_hops = this->base_ptr_chase_hops;
+    ret.mid_ptr_chase_hops = this->mid_ptr_chase_hops;
+    ret.freq_ptr_chase_hops = this->freq_ptr_chase_hops;
 
     return ret;
   }
@@ -147,6 +160,18 @@ private:
   uint64_t base_hops = 0;
   uint64_t mid_hops = 0;
   uint64_t freq_hops = 0;
+
+  /**
+   * Used to record the pointer-chase hops within edge lists.
+   * Gets reset for each vertex.
+   */
+  int prev_base_bank = -1;
+  int prev_mid_bank = -1;
+  int prev_freq_bank = -1;
+
+  uint64_t base_ptr_chase_hops = 0;
+  uint64_t mid_ptr_chase_hops = 0;
+  uint64_t freq_ptr_chase_hops = 0;
 
   uint64_t cur_edge = 0;
 
@@ -371,6 +396,17 @@ private:
     this->base_hops += base_hops;
     this->mid_hops += mid_hops;
     this->freq_hops += freq_hops;
+
+    if (prev_base_bank != -1) {
+      this->base_ptr_chase_hops +=
+          getHopsBetween(prev_base_bank, cur_edge_banks.front());
+      this->mid_ptr_chase_hops += getHopsBetween(prev_mid_bank, mid_bank);
+      this->freq_ptr_chase_hops += getHopsBetween(prev_freq_bank, freq_bank);
+    }
+    this->prev_base_bank = cur_edge_banks.front();
+    this->prev_mid_bank = mid_bank;
+    this->prev_freq_bank = freq_bank;
+
     cur_edge_banks.clear();
     cur_val_banks.clear();
     cur_val_bank_cols = 0;
@@ -385,10 +421,16 @@ NUCAIndirectTraffic::Result
 CountNUCATraffic(const Graph &g, int edge_interleave, int node_interleave,
                  NUCAIndirectTraffic::EdgeBankTopology edge_topology) {
   NUCAIndirectTraffic traffic(edge_interleave, node_interleave, edge_topology);
-  for (NodeID e = 0; e < g.num_edges_directed(); e++) {
-    NodeID edge = g.out_edges()[e];
-    traffic.addEdge(edge);
+  for (NodeID v = 0; v < g.num_nodes(); v++) {
+    traffic.resetPrevBanks();
+    for (NodeID u : g.out_neigh(v)) {
+      traffic.addEdge(u);
+    }
   }
+  // for (NodeID e = 0; e < g.num_edges_directed(); e++) {
+  //   NodeID edge = g.out_edges()[e];
+  //   traffic.addEdge(edge);
+  // }
   // traffic.print();
   return traffic.getResult();
 }
@@ -417,9 +459,9 @@ int main(int argc, char *argv[]) {
   g.PrintStats();
 
   const int node_intrl_pow_start = 6;
-  const int node_intrl_pow_end = 11;
+  const int node_intrl_pow_end = 13;
   const int node_intrl_num = node_intrl_pow_end - node_intrl_pow_start;
-  const int edge_intrl_pow_start = 6;
+  const int edge_intrl_pow_start = 2;
   const int edge_intrl_pow_end = 13;
   const int edge_intrl_num = edge_intrl_pow_end - edge_intrl_pow_start;
 
@@ -480,18 +522,30 @@ int main(int argc, char *argv[]) {
         const auto &ret =
             results[node_intrl_idx][edge_intrl_idx][edge_topology];
 
-        printf("EdgeTopo %s NodeIntrl %6s EdgeIntrl %6s BaseHop %10lu Mid "
-               "%10lu Avg %6s "
-               "Std %6s "
-               "Freq %10lu Std %6s.\n",
-               NUCAIndirectTraffic::edgeBankTopologyToString(edge_topology),
-               formatStorage(node_interleave).c_str(),
-               formatStorage(edge_interleave).c_str(), ret.base_hops,
-               ret.mid_hops,
-               formatStorage(ret.mid_edge_bytes_per_bank_avg).c_str(),
-               formatStorage(ret.mid_edge_bytes_per_bank_std).c_str(),
-               ret.freq_hops,
-               formatStorage(ret.freq_edge_bytes_per_bank_std).c_str());
+        printf(
+            "EdgeTopo %s NodeIntrl %6s EdgeIntrl %6s Base %10lu Ptr %10lu Mid "
+            "%.2f %.2f %.2f Avg %6s "
+            "Std %6s "
+            "Freq %.2f %.2f %.2f Std %6s.\n",
+            NUCAIndirectTraffic::edgeBankTopologyToString(edge_topology),
+            formatStorage(node_interleave).c_str(),
+            formatStorage(edge_interleave).c_str(), ret.base_hops,
+            ret.base_ptr_chase_hops,
+
+            (float)ret.mid_hops / (float)ret.base_hops,
+            (float)ret.mid_ptr_chase_hops / (float)ret.base_ptr_chase_hops,
+            (float)(ret.mid_hops + ret.mid_ptr_chase_hops) /
+                (float)(ret.base_hops + ret.base_ptr_chase_hops),
+
+            formatStorage(ret.mid_edge_bytes_per_bank_avg).c_str(),
+            formatStorage(ret.mid_edge_bytes_per_bank_std).c_str(),
+
+            (float)ret.freq_hops / (float)ret.base_hops,
+            (float)ret.freq_ptr_chase_hops / (float)ret.base_ptr_chase_hops,
+            (float)(ret.freq_hops + ret.freq_ptr_chase_hops) /
+                (float)(ret.base_hops + ret.base_ptr_chase_hops),
+
+            formatStorage(ret.freq_edge_bytes_per_bank_std).c_str());
       }
     }
   }

@@ -117,15 +117,10 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
                         sizeof(EdgeIndexT), num_nodes, 0, 0);
   m5_stream_nuca_region("gap.pr_push.out_edge", out_edges, sizeof(NodeID),
                         num_edges, 0, 0);
-  m5_stream_nuca_set_property(next_scores_data,
-                              STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                              roundUpPow2(num_nodes / 64));
   m5_stream_nuca_align(scores_data, next_scores_data, 0);
   m5_stream_nuca_align(out_neigh_index, next_scores_data, 0);
   m5_stream_nuca_align(out_edges, next_scores_data,
                        m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
-  m5_stream_nuca_align(out_edges, out_neigh_index,
-                       m5_stream_nuca_encode_csr_index());
   m5_stream_nuca_remap();
 
 #endif // GEM_FORGE

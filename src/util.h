@@ -5,6 +5,7 @@
 #define UTIL_H_
 
 #include <cinttypes>
+#include <omp.h>
 #include <stdio.h>
 #include <string>
 
@@ -83,22 +84,48 @@ public:
   RangeIter<T_> end() const { return RangeIter<T_>(to_); }
 };
 
-static constexpr std::size_t AlignBytes = 4096;
+static constexpr std::size_t alignBytes = 4096;
 template <typename T> T *alignedAllocAndTouch(size_t numElements) {
-  auto TotalBytes = sizeof(T) * numElements;
-  if (TotalBytes % AlignBytes) {
-    TotalBytes = (TotalBytes / AlignBytes + 1) * AlignBytes;
+  auto totalBytes = sizeof(T) * numElements;
+  if (totalBytes % alignBytes) {
+    totalBytes = (totalBytes / alignBytes + 1) * alignBytes;
   }
-  auto P = reinterpret_cast<T *>(aligned_alloc(AlignBytes, TotalBytes));
+  auto p = reinterpret_cast<T *>(aligned_alloc(alignBytes, totalBytes));
 
-  auto Raw = reinterpret_cast<char *>(P);
-  for (unsigned long Byte = 0; Byte < TotalBytes; Byte += AlignBytes) {
-    Raw[Byte] = 0;
+  auto raw = reinterpret_cast<char *>(p);
+  for (unsigned long Byte = 0; Byte < totalBytes; Byte += alignBytes) {
+    raw[Byte] = 0;
   }
-  return P;
+  return p;
+}
+
+uint32_t roundUpPow2(uint32_t v) {
+  v--;
+  v |= v >> 1;
+  v |= v >> 2;
+  v |= v >> 4;
+  v |= v >> 8;
+  v |= v >> 16;
+  v++;
+  return v;
+}
+
+uint32_t log2Pow2(uint32_t v) {
+  int log2;
+  for (log2 = 0; v != 1; v >>= 1, log2++) {
+  }
+  return log2;
 }
 
 #ifdef GEM_FORGE
+
+__attribute__((noinline)) void gf_warm_impl(char *buffer, uint64_t totalBytes) {
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+  for (uint64_t i = 0; i < totalBytes; i += 64) {
+    __attribute__((unused)) volatile char v = buffer[i];
+  }
+}
+
 void gf_warm_array(const char *name, void *buffer, uint64_t totalBytes) {
   uint64_t cachedBytes = m5_stream_nuca_get_cached_bytes(buffer);
   printf("[GF_WARM] Region %s TotalBytes %lu CachedBytes %lu Cached %.2f%%.\n",
@@ -106,11 +133,29 @@ void gf_warm_array(const char *name, void *buffer, uint64_t totalBytes) {
          static_cast<float>(cachedBytes) / static_cast<float>(totalBytes) *
              100.f);
   assert(cachedBytes <= totalBytes);
-#pragma omp parallel for firstprivate(buffer)
-  for (uint64_t i = 0; i < cachedBytes; i += 64) {
-    __attribute__((unused)) volatile uint8_t data =
-        reinterpret_cast<uint8_t *>(buffer)[i];
+
+  char *data = reinterpret_cast<char *>(buffer);
+#pragma omp parallel firstprivate(data, cachedBytes)
+  {
+    int threads = omp_get_num_threads();
+    int threadId = omp_get_thread_num();
+    uint64_t bytesPerThread = (cachedBytes + threads - 1) / threads;
+    char *lhs = data + threadId * bytesPerThread;
+    char *rhs = lhs + bytesPerThread;
+    char *end = data + cachedBytes;
+    if (lhs < end) {
+      if (rhs <= end) {
+        gf_warm_impl(lhs, rhs - lhs);
+      } else {
+        gf_warm_impl(lhs, end - lhs);
+      }
+    }
   }
+  // #pragma omp parallel for firstprivate(buffer)
+  //   for (uint64_t i = 0; i < cachedBytes; i += 64) {
+  //     __attribute__((unused)) volatile uint8_t data =
+  //         reinterpret_cast<uint8_t *>(buffer)[i];
+  //   }
   printf("[GF_WARM] Region %s Warmed %.2f%%.\n", name,
          static_cast<float>(cachedBytes) / static_cast<float>(totalBytes) *
              100.f);
