@@ -28,11 +28,11 @@ Simple container for graph in CSR format
 
 // Used to hold node & weight, with another node it makes a weighted edge
 template <typename NodeID_, typename WeightT_> struct NodeWeight {
-  NodeID_ v;
   WeightT_ w;
+  NodeID_ v;
   NodeWeight() {}
-  NodeWeight(NodeID_ v) : v(v), w(1) {}
-  NodeWeight(NodeID_ v, WeightT_ w) : v(v), w(w) {}
+  NodeWeight(NodeID_ v) : w(1), v(v) {}
+  NodeWeight(NodeID_ v, WeightT_ w) : w(w), v(v) {}
 
   bool operator<(const NodeWeight &rhs) const {
     return v == rhs.v ? w < rhs.w : v < rhs.v;

@@ -120,9 +120,10 @@ uint32_t log2Pow2(uint32_t v) {
 #ifdef GEM_FORGE
 
 __attribute__((noinline)) void gf_warm_impl(char *buffer, uint64_t totalBytes) {
+  auto N = totalBytes / 64;
 #pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
-  for (uint64_t i = 0; i < totalBytes; i += 64) {
-    __attribute__((unused)) volatile char v = buffer[i];
+  for (uint64_t i = 0; i < N; i++) {
+    __attribute__((unused)) volatile char v = buffer[i * 64];
   }
 }
 

@@ -65,15 +65,8 @@ execution order, leading to significant speedup on large diameter road networks.
     algorithms with GraphIt." The 18th International Symposium on Code
 Generation and Optimization (CGO), pages 158-170, 2020.
 
-Inline RelaxEdges.
-
 Control flags:
 USE_EDGE_INDEX_OFFSET: Use index_offset instead of the pointer index.
-USE_SPATIAL_QUEUE: Use a spatially localized queue instead of default thread
-    localized queue.
-    So far we assume that there N banks, and vertexes are divided into
-    N clusters with one cluster per bank.
-*
 */
 
 using namespace std;
@@ -92,11 +85,49 @@ using BinT = SizedArray<NodeID>;
 #ifdef USE_EDGE_INDEX_OFFSET
 #define EdgeIndexT NodeID
 #else
-#define EdgeIndexT WNode *
+#define EdgeIndexT NodeID *
 #endif // USE_EDGE_INDEX_OFFSET
 
-pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta,
-                           int warm_cache) {
+__attribute__((noinline)) void RelaxEdges(const WGraph &g, NodeID u,
+                                          WeightT dist_u, WeightT delta,
+                                          pvector<WeightT> &dist,
+                                          vector<BinT> &local_bins) {
+  /**
+   * Zhengrong: Rewrite using iterators to introduce IV.
+   * Avoid the fake pointer chasing pattern in original IR.
+   */
+  WeightT *dist_data = dist.data();
+  auto out_neighbor = g.out_neigh(u);
+  const WNode *out_begin = out_neighbor.begin();
+  const WNode *out_end = out_neighbor.end();
+  const int64_t N = out_end - out_begin;
+
+  for (int64_t i = 0; i < N; ++i) {
+
+    const WNode &wn = out_begin[i];
+
+#pragma ss stream_name "gap.sssp.out_w.ld"
+    const WeightT weight = wn.w;
+
+#pragma ss stream_name "gap.sssp.out_v.ld"
+    const NodeID v = wn.v;
+
+    WeightT new_dist = dist_u + weight;
+    // Use clang's __atomic_fetch_min.
+
+#pragma ss stream_name "gap.sssp.min.at"
+    WeightT old_dist =
+        __atomic_fetch_min(&dist_data[v], new_dist, __ATOMIC_RELAXED);
+
+    if (old_dist > new_dist) {
+      size_t dest_bin = new_dist / delta;
+      assert(dest_bin < local_bins.size());
+      local_bins[dest_bin].push_back(v);
+    }
+  }
+}
+
+pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
   Timer t;
   pvector<WeightT> dist(g.num_nodes(), kDistInf);
   dist[source] = 0;
@@ -105,54 +136,32 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta,
   BinIndexT shared_indexes[2] = {0, kMaxBin};
   size_t frontier_tails[2] = {1, 0};
   frontier[0] = source;
-
-#ifdef USE_EDGE_INDEX_OFFSET
-  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
-#else
-  EdgeIndexT *out_neigh_index = g.out_neigh_index();
-#endif // USE_EDGE_INDEX_OFFSET
-  WNode *out_edges = g.out_edges();
-  auto num_nodes = g.num_nodes();
-  auto num_edges = g.num_edges_directed();
-
-#ifdef GEM_FORGE
-  {
-    WeightT *dist_data = dist.data();
-
-    m5_stream_nuca_region("gap.sssp.dist", dist_data, sizeof(WeightT),
-                          num_nodes, 0, 0);
-    m5_stream_nuca_region("gap.sssp.out_neigh_index", out_neigh_index,
-                          sizeof(EdgeIndexT), num_nodes, 0, 0);
-    m5_stream_nuca_region("gap.sssp.out_edge", out_edges, sizeof(WNode),
-                          num_edges, 0, 0);
-    m5_stream_nuca_align(out_neigh_index, dist_data, 0);
-    m5_stream_nuca_align(out_edges, dist_data,
-                         m5_stream_nuca_encode_ind_align(
-                             offsetof(WNode, v), sizeof(((WNode *)0)->v)));
-    m5_stream_nuca_remap();
-  }
-
-#endif
-
   t.Start();
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
-  if (warm_cache > 0) {
+#ifdef GEM_FORGE_WARM_CACHE
+  {
+    WNode **out_neigh_index = g.out_neigh_index();
+    WNode *out_edges = g.out_edges();
     WeightT *dist_data = dist.data();
-    gf_warm_array("out_neigh_index", out_neigh_index,
-                  num_nodes * sizeof(out_neigh_index[0]));
-    gf_warm_array("dist", dist_data, num_nodes * sizeof(dist_data[0]));
-    if (warm_cache > 1) {
-      WNode *out_edges = g.out_edges();
-      gf_warm_array("out_edges", out_edges, num_edges * sizeof(out_edges[0]));
+#pragma omp parallel for firstprivate(out_neigh_index)
+    for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(*out_neigh_index)) {
+      __attribute__((unused)) volatile WNode *out_neigh = out_neigh_index[n];
+      __attribute__((unused)) volatile WeightT dist = dist_data[n];
     }
-    std::cout << "Warm up done.\n";
+#pragma omp parallel for firstprivate(out_edges)
+    for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(WNode)) {
+      // We also warm up the out edge list.
+      __attribute__((unused)) volatile WNode edge = out_edges[e];
+    }
   }
+  std::cout << "Warm up done.\n";
+#endif
   m5_reset_stats(0, 0);
 #endif
 
-#pragma omp parallel firstprivate(delta, out_neigh_index, out_edges)
+#pragma omp parallel
   {
     vector<BinT> local_bins;
     local_bins.reserve(kMaxNumBin);
@@ -161,83 +170,23 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta,
     }
     size_t iter = 0;
     while (shared_indexes[iter & 1] != kMaxBin) {
-
 #ifdef GEM_FORGE
 #pragma omp single nowait
       m5_work_begin(0, 0);
 #endif
-
-      {
-        WeightT curr_bin_weight =
-            delta * static_cast<WeightT>(shared_indexes[iter & 1]);
-        const size_t frontier_size = frontier_tails[iter & 1];
-        WeightT *dist_data = dist.data();
-        NodeID *frontier_data = frontier.data();
-
-#pragma omp for nowait schedule(static)
-        for (size_t i = 0; i < frontier_size; i++) {
-
-#pragma ss stream_name "gap.sssp.frontier.ld"
-          NodeID u = frontier_data[i];
-
-#pragma ss stream_name "gap.sssp.dist.ld"
-          WeightT u_dist = dist_data[u];
-
-          EdgeIndexT *out_neigh_ptr = out_neigh_index + u;
-
-#pragma ss stream_name "gap.sssp.out_begin.ld"
-          EdgeIndexT out_begin = out_neigh_ptr[0];
-
-#pragma ss stream_name "gap.sssp.out_end.ld"
-          EdgeIndexT out_end = out_neigh_ptr[1];
-
-#ifdef USE_EDGE_INDEX_OFFSET
-          WNode *out_ptr = out_edges + out_begin;
-#else
-          WNode *out_ptr = out_begin;
-#endif
-
-          int64_t out_degree = out_end - out_begin;
-
-          if (u_dist >= curr_bin_weight) {
-
-            /**
-             * Zhengrong: Rewrite using iterators to introduce IV.
-             * Avoid the fake pointer chasing pattern in original IR.
-             */
-            for (int64_t i = 0; i < out_degree; ++i) {
-
-              const WNode &wn = out_ptr[i];
-
-#pragma ss stream_name "gap.sssp.out_w.ld"
-              const WeightT weight = wn.w;
-
-#pragma ss stream_name "gap.sssp.out_v.ld"
-              const NodeID v = wn.v;
-
-              WeightT new_dist = u_dist + weight;
-
-#pragma ss stream_name "gap.sssp.min.at"
-              WeightT old_dist =
-                  __atomic_fetch_min(&dist_data[v], new_dist, __ATOMIC_RELAXED);
-
-              if (old_dist > new_dist) {
-                size_t dest_bin = new_dist / delta;
-                assert(dest_bin < local_bins.size());
-                local_bins[dest_bin].push_back(v);
-              }
-            }
-          }
-        }
-      }
-
       BinIndexT &curr_bin_index = shared_indexes[iter & 1];
       BinIndexT &next_bin_index = shared_indexes[(iter + 1) & 1];
       size_t &curr_frontier_tail = frontier_tails[iter & 1];
       size_t &next_frontier_tail = frontier_tails[(iter + 1) & 1];
-
+#pragma omp for nowait schedule(static)
+      for (size_t i = 0; i < curr_frontier_tail; i++) {
+        NodeID u = frontier[i];
+        WeightT dist_u = dist[u];
+        if (dist_u >= delta * static_cast<WeightT>(curr_bin_index)) {
+          RelaxEdges(g, u, dist_u, delta, dist, local_bins);
+        }
+      }
 /**
- * This is to further relax edges within the current bin.
  * From our testing, this seems not critical. Disable for now.
  */
 #if 0
@@ -250,8 +199,6 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta,
           RelaxEdges(g, u, delta, dist, local_bins);
       }
 #endif
-
-      // Copy out the local bin.
       for (BinIndexT i = curr_bin_index; i < local_bins.size(); i++) {
         if (!local_bins[i].empty()) {
 #ifdef __clang__
@@ -267,8 +214,7 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta,
 #pragma omp single nowait
       {
         t.Stop();
-        printf("%6zu%5d%11" PRId64 "  %10.5lf\n", iter, curr_bin_index,
-               curr_frontier_tail, t.Millisecs());
+        PrintStep(curr_bin_index, t.Millisecs(), curr_frontier_tail);
         t.Start();
         curr_bin_index = kMaxBin;
         curr_frontier_tail = 0;
@@ -282,7 +228,6 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta,
       }
       iter++;
 #pragma omp barrier
-
 #ifdef GEM_FORGE
 #pragma omp single nowait
       m5_work_end(0, 0);
@@ -358,7 +303,7 @@ int main(int argc, char *argv[]) {
   }
   SourcePicker<WGraph> sp(g, given_sources);
   auto SSSPBound = [&sp, &cli](const WGraph &g) {
-    return DeltaStep(g, sp.PickNext(), cli.delta(), cli.warm_cache());
+    return DeltaStep(g, sp.PickNext(), cli.delta());
   };
   SourcePicker<WGraph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const WGraph &g, const pvector<WeightT> &dist) {

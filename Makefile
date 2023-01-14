@@ -16,7 +16,7 @@ ifneq ($(SERIAL), 1)
 	CXX_FLAGS += $(PAR_FLAG)
 endif
 
-KERNELS = bc bfs bfs_pull bfs_pull_shuffle cc cc_sv pr_pull pr_pull_shuffle pr_push sssp sssp_check sssp_inline tc
+KERNELS = bc bfs bfs_pull bfs_pull_shuffle cc cc_sv pr_pull pr_pull_shuffle pr_push tc
 KERNELS += bfs_push
 KERNELS += bfs_push_spatial
 KERNELS += bfs_push_offset
@@ -25,6 +25,15 @@ KERNELS += bfs_push_spatial_dyn128
 KERNELS += bfs_push_spatial_dyn256
 KERNELS += bfs_push_spatial_dyn512
 KERNELS += bfs_push_spatial_guided
+KERNELS += sssp_outline
+KERNELS += sssp_check
+KERNELS += sssp
+KERNELS += sssp_spatial_delta1
+KERNELS += sssp_spatial_delta2
+KERNELS += sssp_spatial_delta4
+KERNELS += sssp_spatial_delta8
+KERNELS += sssp_spatial_delta16
+KERNELS += sssp_spatial_delta32
 SUITE = $(KERNELS) converter gscore bound_dfs nuca_analysis
 
 .PHONY: all

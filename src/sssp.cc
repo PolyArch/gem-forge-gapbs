@@ -18,6 +18,7 @@
 #include "pvector.h"
 #include "sized_array.h"
 #include "source_generator.h"
+#include "spatial_queue.h"
 #include "timer.h"
 
 #ifdef GEM_FORGE
@@ -65,8 +66,20 @@ execution order, leading to significant speedup on large diameter road networks.
     algorithms with GraphIt." The 18th International Symposium on Code
 Generation and Optimization (CGO), pages 158-170, 2020.
 
+Inline RelaxEdges.
+
 Control flags:
 USE_EDGE_INDEX_OFFSET: Use index_offset instead of the pointer index.
+USE_SPATIAL_QUEUE: Use a spatially localized queue instead of default thread
+    localized queue.
+    So far we assume that there N banks, and vertexes are divided into
+    N clusters with one cluster per bank.
+USE_SPATIAL_FRONTIER: Instead of copying the localized queue into a global
+    frontier, we copy them into another spatial queue, this helps avoid the
+    indirect traffic for the outer loop.
+DELTA_STEP: Specify the delta step.
+    If too large, this will fall back to a single bucket.
+*
 */
 
 using namespace std;
@@ -74,165 +87,389 @@ using namespace std;
 using BinIndexT = uint32_t;
 const WeightT kDistInf = numeric_limits<WeightT>::max() / 2;
 const BinIndexT kMaxBin = numeric_limits<BinIndexT>::max() / 2;
+
+#ifndef DELTA_STEP
+#define DELTA_STEP 1
+#endif
+
+const WeightT kDelta = DELTA_STEP;
+
 // const BinIndexT kBinSizeThreshold = 1000;
 /**
  * Zhengrong: We simply set a maximum number of bins, and a maximum
  * number of vertexes in the bins.
  */
-const BinIndexT kMaxNumBin = 100;
+const BinIndexT kMaxNumBin = 64 / kDelta;
 using BinT = SizedArray<NodeID>;
 
 #ifdef USE_EDGE_INDEX_OFFSET
 #define EdgeIndexT NodeID
 #else
-#define EdgeIndexT NodeID *
+#define EdgeIndexT WNode *
 #endif // USE_EDGE_INDEX_OFFSET
 
-__attribute__((noinline)) void RelaxEdges(const WGraph &g, NodeID u,
-                                          WeightT dist_u, WeightT delta,
-                                          pvector<WeightT> &dist,
-                                          vector<BinT> &local_bins) {
-  /**
-   * Zhengrong: Rewrite using iterators to introduce IV.
-   * Avoid the fake pointer chasing pattern in original IR.
-   */
-  WeightT *dist_data = dist.data();
-  auto out_neighbor = g.out_neigh(u);
-  const WNode *out_begin = out_neighbor.begin();
-  const WNode *out_end = out_neighbor.end();
-  const int64_t N = out_end - out_begin;
+__attribute__((noinline)) void findMinBin(BinIndexT curr_bin_index,
+                                          BinIndexT &next_bin_index,
+                                          std::vector<BinT> &local_bins) {
 
-  for (int64_t i = 0; i < N; ++i) {
+  for (BinIndexT bin_idx = curr_bin_index; bin_idx < kMaxNumBin; bin_idx++) {
 
-    const WNode &wn = out_begin[i];
+    if (!local_bins[bin_idx].empty()) {
 
-#pragma ss stream_name "gap.sssp.out_w.ld"
-    const WeightT weight = wn.w;
+#ifdef __clang__
+      __atomic_fetch_min(&next_bin_index, bin_idx, __ATOMIC_RELAXED);
+#else
+#pragma omp critical
+      next_bin_index = min(next_bin_index, bin_idx);
+#endif
 
-#pragma ss stream_name "gap.sssp.out_v.ld"
-    const NodeID v = wn.v;
-
-    WeightT new_dist = dist_u + weight;
-    // Use clang's __atomic_fetch_min.
-
-#pragma ss stream_name "gap.sssp.min.at"
-    WeightT old_dist =
-        __atomic_fetch_min(&dist_data[v], new_dist, __ATOMIC_RELAXED);
-
-    if (old_dist > new_dist) {
-      size_t dest_bin = new_dist / delta;
-      assert(dest_bin < local_bins.size());
-      local_bins[dest_bin].push_back(v);
+      break;
     }
   }
 }
 
-pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, WeightT delta) {
+__attribute__((noinline)) void findMinBinSpatial(BinIndexT curr_bin_index,
+                                                 BinIndexT &next_bin_index,
+                                                 SpatialQueue<NodeID> &squeue) {
+
+  for (BinIndexT bin_idx = curr_bin_index; bin_idx < kMaxNumBin; bin_idx++) {
+
+    bool bin_empty = true;
+
+    // If the bin in any queue is not empty.
+    for (int queue_idx = 0; queue_idx < squeue.num_queues; ++queue_idx) {
+      if (squeue.size(queue_idx, bin_idx)) {
+        bin_empty = false;
+        break;
+      }
+    }
+
+    if (!bin_empty) {
+
+#ifdef __clang__
+      __atomic_fetch_min(&next_bin_index, bin_idx, __ATOMIC_RELAXED);
+#else
+#pragma omp critical
+      next_bin_index = min(next_bin_index, bin_idx);
+#endif
+
+      break;
+    }
+  }
+}
+
+__attribute__((noinline)) void
+copySpatialQueueToGlobalFrontier(SpatialQueue<NodeID> &squeue,
+                                 BinIndexT next_bin_index,
+                                 size_t &next_frontier_tail, NodeID *frontier) {
+
+  const auto squeue_data = squeue.data;
+  const auto squeue_queue_capacity = squeue.queue_capacity;
+  const auto squeue_bin_capacity = squeue.bin_capacity;
+
+#pragma omp for schedule(static)
+  for (int queue_idx = 0; queue_idx < squeue.num_queues; ++queue_idx) {
+    auto bin_size = squeue.size(queue_idx, next_bin_index);
+    if (bin_size == 0) {
+      continue;
+    }
+    auto bin_begin = squeue_data + queue_idx * squeue_queue_capacity +
+                     next_bin_index * squeue_bin_capacity;
+    auto bin_end = bin_begin + bin_size;
+
+    size_t copy_start = fetch_and_add(next_frontier_tail, bin_size);
+    copy(bin_begin, bin_end, frontier + copy_start);
+
+    squeue.clear(queue_idx, next_bin_index);
+  }
+}
+
+pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
   Timer t;
-  pvector<WeightT> dist(g.num_nodes(), kDistInf);
-  dist[source] = 0;
   pvector<NodeID> frontier(g.num_edges_directed());
   // two element arrays for double buffering curr=iter&1, next=(iter+1)&1
   BinIndexT shared_indexes[2] = {0, kMaxBin};
   size_t frontier_tails[2] = {1, 0};
   frontier[0] = source;
+
+#ifdef USE_EDGE_INDEX_OFFSET
+  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
+#else
+  EdgeIndexT *out_neigh_index = g.out_neigh_index();
+#endif // USE_EDGE_INDEX_OFFSET
+  WNode *out_edges = g.out_edges();
+  auto num_nodes = g.num_nodes();
+  auto num_edges = g.num_edges_directed();
+
+  pvector<WeightT> dist(g.num_nodes(), kDistInf);
+  dist[source] = 0;
+
+  const int num_banks = 64;
+  const auto num_nodes_per_bank = roundUpPow2(num_nodes / num_banks);
+
+#ifdef USE_SPATIAL_QUEUE
+  /**
+   * We have a spatial queue for each bank, and with bins.
+   */
+  const auto node_hash_mask = num_banks - 1;
+  const auto node_hash_shift = log2Pow2(num_nodes_per_bank);
+  SpatialQueue<NodeID> squeue(num_banks, kMaxNumBin,
+                              num_nodes_per_bank * kMaxNumBin * kDelta,
+                              node_hash_shift, node_hash_mask);
+
+#endif
+
+#ifdef GEM_FORGE
+  {
+    WeightT *dist_data = dist.data();
+
+    m5_stream_nuca_region("gap.sssp.dist", dist_data, sizeof(WeightT),
+                          num_nodes, 0, 0);
+    m5_stream_nuca_region("gap.sssp.out_neigh_index", out_neigh_index,
+                          sizeof(EdgeIndexT), num_nodes, 0, 0);
+    m5_stream_nuca_region("gap.sssp.out_edge", out_edges, sizeof(WNode),
+                          num_edges, 0, 0);
+    m5_stream_nuca_set_property(
+        dist_data, STREAM_NUCA_REGION_PROPERTY_INTERLEAVE, num_nodes_per_bank);
+    m5_stream_nuca_align(out_neigh_index, dist_data, 0);
+    m5_stream_nuca_align(out_edges, dist_data,
+                         m5_stream_nuca_encode_ind_align(
+                             offsetof(WNode, v), sizeof(((WNode *)0)->v)));
+    m5_stream_nuca_align(out_edges, out_neigh_index,
+                         m5_stream_nuca_encode_csr_index());
+
+#ifdef USE_SPATIAL_QUEUE
+    m5_stream_nuca_region("gap.sssp.squeue", squeue.data,
+                          sizeof(NodeID) * kMaxNumBin * kDelta, num_nodes, 0,
+                          0);
+    m5_stream_nuca_region("gap.sssp.squeue_meta", squeue.meta,
+                          sizeof(*squeue.meta), num_banks, 0, 0);
+    m5_stream_nuca_align(squeue.data, dist_data, 0);
+    m5_stream_nuca_align(squeue.meta, dist_data, num_nodes_per_bank);
+#endif
+
+    m5_stream_nuca_remap();
+  }
+
+#endif
+
   t.Start();
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
-#ifdef GEM_FORGE_WARM_CACHE
-  {
-    WNode **out_neigh_index = g.out_neigh_index();
-    WNode *out_edges = g.out_edges();
+  if (warm_cache > 0) {
     WeightT *dist_data = dist.data();
-#pragma omp parallel for firstprivate(out_neigh_index)
-    for (NodeID n = 0; n < g.num_nodes(); n += 64 / sizeof(*out_neigh_index)) {
-      __attribute__((unused)) volatile WNode *out_neigh = out_neigh_index[n];
-      __attribute__((unused)) volatile WeightT dist = dist_data[n];
+    gf_warm_array("out_neigh_index", out_neigh_index,
+                  num_nodes * sizeof(out_neigh_index[0]));
+    gf_warm_array("dist", dist_data, num_nodes * sizeof(dist_data[0]));
+    if (warm_cache > 1) {
+      WNode *out_edges = g.out_edges();
+      gf_warm_array("out_edges", out_edges, num_edges * sizeof(out_edges[0]));
     }
-#pragma omp parallel for firstprivate(out_edges)
-    for (NodeID e = 0; e < g.num_edges(); e += 64 / sizeof(WNode)) {
-      // We also warm up the out edge list.
-      __attribute__((unused)) volatile WNode edge = out_edges[e];
-    }
+    std::cout << "Warm up done.\n";
   }
-  std::cout << "Warm up done.\n";
-#endif
   m5_reset_stats(0, 0);
 #endif
 
-#pragma omp parallel
+#ifndef GEM_FORGE
+  uint64_t processed_vertexes = 0;
+#endif
+
+#pragma omp parallel firstprivate(out_neigh_index, out_edges)
   {
+
+#ifdef USE_SPATIAL_QUEUE
+    const auto squeue_data = squeue.data;
+    const auto squeue_meta = squeue.meta;
+    const auto squeue_queue_capacity = squeue.queue_capacity;
+    const auto squeue_bin_capacity = squeue.bin_capacity;
+    const auto squeue_hash_shift = squeue.hash_shift;
+    const auto squeue_hash_mask = squeue.hash_mask;
+#else
     vector<BinT> local_bins;
     local_bins.reserve(kMaxNumBin);
     for (int i = 0; i < kMaxNumBin; ++i) {
       local_bins.emplace_back(g.num_edges_directed());
     }
+#endif
+
     size_t iter = 0;
     while (shared_indexes[iter & 1] != kMaxBin) {
-#ifdef GEM_FORGE
-#pragma omp single nowait
-      m5_work_begin(0, 0);
+
+#ifndef GEM_FORGE
+      uint64_t local_processed_vertexes = 0;
 #endif
+
+      WeightT curr_bin_weight =
+          kDelta * static_cast<WeightT>(shared_indexes[iter & 1]);
+      const size_t frontier_size = frontier_tails[iter & 1];
+      {
+        WeightT *dist_data = dist.data();
+        NodeID *frontier_data = frontier.data();
+
+#pragma omp for schedule(static) nowait
+        for (size_t i = 0; i < frontier_size; i++) {
+
+#pragma ss stream_name "gap.sssp.frontier.ld"
+          NodeID u = frontier_data[i];
+
+#pragma ss stream_name "gap.sssp.dist.ld"
+          WeightT u_dist = dist_data[u];
+
+          EdgeIndexT *out_neigh_ptr = out_neigh_index + u;
+
+#pragma ss stream_name "gap.sssp.out_begin.ld"
+          EdgeIndexT out_begin = out_neigh_ptr[0];
+
+#pragma ss stream_name "gap.sssp.out_end.ld"
+          EdgeIndexT out_end = out_neigh_ptr[1];
+
+#ifdef USE_EDGE_INDEX_OFFSET
+          WNode *out_ptr = out_edges + out_begin;
+#else
+          WNode *out_ptr = out_begin;
+#endif
+
+          int64_t out_degree = out_end - out_begin;
+
+          if (u_dist >= curr_bin_weight) {
+
+#ifndef GEM_FORGE
+            local_processed_vertexes++;
+#endif
+
+            /**
+             * Zhengrong: Rewrite using iterators to introduce IV.
+             * Avoid the fake pointer chasing pattern in original IR.
+             */
+            for (int64_t i = 0; i < out_degree; ++i) {
+
+              const WNode &wn = out_ptr[i];
+
+#pragma ss stream_name "gap.sssp.out_w.ld"
+              const WeightT weight = wn.w;
+
+#pragma ss stream_name "gap.sssp.out_v.ld"
+              const NodeID v = wn.v;
+
+              WeightT new_dist = u_dist + weight;
+
+#pragma ss stream_name "gap.sssp.min.at"
+              WeightT old_dist =
+                  __atomic_fetch_min(&dist_data[v], new_dist, __ATOMIC_RELAXED);
+
+              if (old_dist > new_dist) {
+
+#ifdef USE_SPATIAL_QUEUE
+                /**
+                 * Hash into the spatial queue and bin within each queue.
+                 */
+                auto queue_idx = (v >> squeue_hash_shift) & squeue_hash_mask;
+                auto bin_idx = new_dist / kDelta;
+
+#ifndef GEM_FORGE
+                assert(bin_idx < kMaxNumBin);
+#endif
+
+#pragma ss stream_name "gap.sssp.enque.at"
+                auto queue_loc = __atomic_fetch_add(
+                    &squeue_meta[queue_idx].size[bin_idx], 1, __ATOMIC_RELAXED);
+
+#pragma ss stream_name "gap.sssp.enque.st"
+                squeue_data[queue_idx * squeue_queue_capacity +
+                            bin_idx * squeue_bin_capacity + queue_loc] = v;
+
+#else
+                size_t dest_bin = new_dist / kDelta;
+#ifndef GEM_FORGE
+                assert(dest_bin < local_bins.size());
+#endif
+                local_bins[dest_bin].push_back(v);
+#endif
+              }
+            }
+          }
+        }
+      }
+
       BinIndexT &curr_bin_index = shared_indexes[iter & 1];
       BinIndexT &next_bin_index = shared_indexes[(iter + 1) & 1];
       size_t &curr_frontier_tail = frontier_tails[iter & 1];
       size_t &next_frontier_tail = frontier_tails[(iter + 1) & 1];
-#pragma omp for nowait schedule(static)
-      for (size_t i = 0; i < curr_frontier_tail; i++) {
-        NodeID u = frontier[i];
-        WeightT dist_u = dist[u];
-        if (dist_u >= delta * static_cast<WeightT>(curr_bin_index)) {
-          RelaxEdges(g, u, dist_u, delta, dist, local_bins);
-        }
-      }
-/**
- * From our testing, this seems not critical. Disable for now.
- */
-#if 0
-      while (curr_bin_index < local_bins.size() &&
-             !local_bins[curr_bin_index].empty() &&
-             local_bins[curr_bin_index].size() < kBinSizeThreshold) {
-        vector<NodeID> curr_bin_copy = local_bins[curr_bin_index];
-        local_bins[curr_bin_index].resize(0);
-        for (NodeID u : curr_bin_copy)
-          RelaxEdges(g, u, delta, dist, local_bins);
-      }
-#endif
-      for (BinIndexT i = curr_bin_index; i < local_bins.size(); i++) {
-        if (!local_bins[i].empty()) {
-#ifdef __clang__
-          __atomic_fetch_min(&next_bin_index, i, __ATOMIC_RELAXED);
-#else
-#pragma omp critical
-          next_bin_index = min(next_bin_index, i);
-#endif
-          break;
-        }
-      }
-#pragma omp barrier
-#pragma omp single nowait
+
+      /**
+       * Search for the local bin with smallest weight.
+       */
+#ifdef USE_SPATIAL_QUEUE
+
+      // #pragma omp single
       {
-        t.Stop();
-        PrintStep(curr_bin_index, t.Millisecs(), curr_frontier_tail);
-        t.Start();
-        curr_bin_index = kMaxBin;
-        curr_frontier_tail = 0;
+
+        // t.Stop();
+        // printf("%6zu%5d%11" PRId64 "  %10.5lf\n", iter, curr_bin_index,
+        //        curr_frontier_tail, t.Millisecs());
+        // t.Start();
+
+        BinIndexT old_bin_index = curr_bin_index;
+
+        findMinBinSpatial(old_bin_index, next_bin_index, squeue);
       }
-      if (next_bin_index < local_bins.size()) {
+
+#ifndef GEM_FORGE
+      fetch_and_add(processed_vertexes, local_processed_vertexes);
+#endif
+
+// Copy to frontier.
+#pragma omp barrier
+
+#ifndef GEM_FORGE
+      if (omp_get_thread_num() == 0) {
+        t.Stop();
+        printf("%6zu%5d%11" PRId64 " %4.2f %10.5lf\n", iter, curr_bin_weight,
+               frontier_size,
+               static_cast<float>(processed_vertexes) /
+                   static_cast<float>(frontier_size),
+               t.Millisecs());
+        processed_vertexes = 0;
+        t.Start();
+      }
+#endif
+
+      // Clear the curr_bin_index.
+      curr_bin_index = kMaxBin;
+      curr_frontier_tail = 0;
+
+      if (next_bin_index < kMaxNumBin) {
+        copySpatialQueueToGlobalFrontier(squeue, next_bin_index,
+                                         next_frontier_tail, frontier.data());
+      }
+
+      iter++;
+
+#else
+
+      findMinBin(curr_bin_index, next_bin_index, local_bins);
+
+#pragma omp barrier
+      if (next_bin_index < kMaxNumBin) {
         size_t copy_start = fetch_and_add(next_frontier_tail,
                                           local_bins[next_bin_index].size());
         copy(local_bins[next_bin_index].begin(),
              local_bins[next_bin_index].end(), frontier.data() + copy_start);
         local_bins[next_bin_index].resize(0);
       }
+
+#pragma omp single
+      {
+        curr_bin_index = kMaxBin;
+        curr_frontier_tail = 0;
+      }
+
       iter++;
-#pragma omp barrier
-#ifdef GEM_FORGE
-#pragma omp single nowait
-      m5_work_end(0, 0);
+
 #endif
     }
+
 #pragma omp single
     cout << "took " << iter << " iterations" << endl;
   }
@@ -287,6 +524,7 @@ int main(int argc, char *argv[]) {
   if (!cli.ParseArgs())
     return -1;
 
+  printf("Num threads %d Delta %d.\n", cli.num_threads(), kDelta);
   if (cli.num_threads() != -1) {
     omp_set_num_threads(cli.num_threads());
   }
@@ -303,7 +541,7 @@ int main(int argc, char *argv[]) {
   }
   SourcePicker<WGraph> sp(g, given_sources);
   auto SSSPBound = [&sp, &cli](const WGraph &g) {
-    return DeltaStep(g, sp.PickNext(), cli.delta());
+    return DeltaStep(g, sp.PickNext(), cli.warm_cache());
   };
   SourcePicker<WGraph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const WGraph &g, const pvector<WeightT> &dist) {

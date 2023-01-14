@@ -63,7 +63,9 @@ public:
   }
 
   void push_back(const T &v) {
+#ifndef GEM_FORGE
     assert(this->num_elements < this->capacity);
+#endif
     this->buffer[this->num_elements] = v;
     this->num_elements++;
   }

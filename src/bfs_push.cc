@@ -167,8 +167,8 @@ void TDStep(const Graph &g, pvector<NodeID> &parent,
           auto queue_idx = (v >> squeue_hash_shift) & squeue_hash_mask;
 
 #pragma ss stream_name "gap.bfs_push.enque.at"
-          auto queue_loc = __atomic_fetch_add(&squeue_meta[queue_idx].size, 1,
-                                              __ATOMIC_RELAXED);
+          auto queue_loc = __atomic_fetch_add(&squeue_meta[queue_idx].size[0],
+                                              1, __ATOMIC_RELAXED);
 
 #pragma ss stream_name "gap.bfs_push.enque.st"
           squeue_data[queue_idx * squeue_capacity + queue_loc] = v;
@@ -188,8 +188,8 @@ void TDStep(const Graph &g, pvector<NodeID> &parent,
 #pragma omp for schedule(static)
     for (int queue_idx = 0; queue_idx < squeue.num_queues; ++queue_idx) {
       queue.append(squeue.data + queue_idx * squeue.queue_capacity,
-                   squeue.size(queue_idx));
-      squeue.clear(queue_idx);
+                   squeue.size(queue_idx, 0));
+      squeue.clear(queue_idx, 0);
     }
 
 #else
@@ -227,8 +227,8 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
 #ifdef USE_SPATIAL_QUEUE
   const auto node_hash_mask = num_banks - 1;
   const auto node_hash_shift = log2Pow2(num_nodes_per_bank);
-  SpatialQueue<NodeID> squeue(num_banks, num_nodes_per_bank, node_hash_shift,
-                              node_hash_mask);
+  SpatialQueue<NodeID> squeue(num_banks, 1 /* num_bins */, num_nodes_per_bank,
+                              node_hash_shift, node_hash_mask);
 #endif
 
 #ifdef GEM_FORGE
@@ -316,7 +316,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
 
     t.Stop();
 
-#ifdef PRINT_STATS
+#ifndef GEM_FORGE
     printf("%6zu  td%11" PRId64 "  %10.5lfms %lu-%lu\n", iter, queue.size(),
            t.Millisecs(), queue.shared_out_start, queue.shared_in);
 #endif
