@@ -43,11 +43,25 @@ public:
   int size(int queue_idx, int bin_idx) const {
     return this->meta[queue_idx].size[bin_idx];
   }
+  int totalSize() const {
+    int ret = 0;
+    for (int queue_idx = 0; queue_idx < this->num_queues; ++queue_idx) {
+      for (int bin_idx = 0; bin_idx < this->num_bins; ++bin_idx) {
+        ret += this->size(queue_idx, bin_idx);
+      }
+    }
+    return ret;
+  }
   void clear(int queue_idx, int bin_idx) {
     this->meta[queue_idx].size[bin_idx] = 0;
   }
 
-  int getQueueIdx(int v) const { return (v >> hash_mask) & hash_mask; }
+  int getQueueIdx(T v) const { return (v >> hash_mask) & hash_mask; }
+  void enque(T v, int bin_idx) {
+    auto queue_idx = getQueueIdx(v);
+    auto loc = this->meta[queue_idx].size[bin_idx]++;
+    this->data[queue_idx * queue_capacity + bin_idx * bin_capacity + loc] = v;
+  }
 
   const int num_queues;
   const int num_bins;

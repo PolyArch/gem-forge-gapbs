@@ -28,12 +28,18 @@ KERNELS += bfs_push_spatial_guided
 KERNELS += sssp_outline
 KERNELS += sssp_check
 KERNELS += sssp
-KERNELS += sssp_spatial_delta1
-KERNELS += sssp_spatial_delta2
-KERNELS += sssp_spatial_delta4
-KERNELS += sssp_spatial_delta8
-KERNELS += sssp_spatial_delta16
-KERNELS += sssp_spatial_delta32
+KERNELS += sssp_sq_delta1
+KERNELS += sssp_sq_delta2
+KERNELS += sssp_sq_delta4
+KERNELS += sssp_sq_delta8
+KERNELS += sssp_sq_delta16
+KERNELS += sssp_sq_delta32
+KERNELS += sssp_sf_delta1
+KERNELS += sssp_sf_delta2
+KERNELS += sssp_sf_delta4
+KERNELS += sssp_sf_delta8
+KERNELS += sssp_sf_delta16
+KERNELS += sssp_sf_delta32
 SUITE = $(KERNELS) converter gscore bound_dfs nuca_analysis
 
 .PHONY: all

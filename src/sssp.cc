@@ -69,14 +69,19 @@ Generation and Optimization (CGO), pages 158-170, 2020.
 Inline RelaxEdges.
 
 Control flags:
+
 USE_EDGE_INDEX_OFFSET: Use index_offset instead of the pointer index.
+
 USE_SPATIAL_QUEUE: Use a spatially localized queue instead of default thread
     localized queue.
     So far we assume that there N banks, and vertexes are divided into
     N clusters with one cluster per bank.
+
 USE_SPATIAL_FRONTIER: Instead of copying the localized queue into a global
     frontier, we copy them into another spatial queue, this helps avoid the
     indirect traffic for the outer loop.
+    NOTE: This only works when USE_SPATIAL_QUEUE is enabled.
+
 DELTA_STEP: Specify the delta step.
     If too large, this will fall back to a single bucket.
 *
@@ -184,13 +189,57 @@ copySpatialQueueToGlobalFrontier(SpatialQueue<NodeID> &squeue,
   }
 }
 
+__attribute__((noinline)) void
+copySpatialQueueToSpatialFrontier(SpatialQueue<NodeID> &squeue,
+                                  BinIndexT next_bin_index,
+                                  SpatialQueue<NodeID> &sfrontier) {
+
+  const auto squeue_data = squeue.data;
+  const auto squeue_queue_capacity = squeue.queue_capacity;
+  const auto squeue_bin_capacity = squeue.bin_capacity;
+
+  const auto sfrontier_data = sfrontier.data;
+  const auto sfrontier_queue_capacity = sfrontier.queue_capacity;
+
+#pragma omp for schedule(static)
+  for (int queue_idx = 0; queue_idx < squeue.num_queues; ++queue_idx) {
+
+    auto bin_size = squeue.size(queue_idx, next_bin_index);
+
+    // Set the size.
+    sfrontier.meta[queue_idx].size[0] = bin_size;
+
+    if (bin_size == 0) {
+      // Avoid the memcpy if nothing to move.
+      continue;
+    }
+    auto bin_begin = squeue_data + queue_idx * squeue_queue_capacity +
+                     next_bin_index * squeue_bin_capacity;
+    auto bin_end = bin_begin + bin_size;
+
+    auto frontier_start = sfrontier_data + queue_idx * sfrontier_queue_capacity;
+
+    copy(bin_begin, bin_end, frontier_start);
+
+    squeue.clear(queue_idx, next_bin_index);
+  }
+}
+
 pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
   Timer t;
-  pvector<NodeID> frontier(g.num_edges_directed());
+
   // two element arrays for double buffering curr=iter&1, next=(iter+1)&1
   BinIndexT shared_indexes[2] = {0, kMaxBin};
+
+#ifndef USE_SPATIAL_FRONTIER
+  pvector<NodeID> frontier(g.num_edges_directed());
   size_t frontier_tails[2] = {1, 0};
   frontier[0] = source;
+#else
+#ifndef USE_SPATIAL_QUEUE
+#error "Spatial frontier must be used with spatial queue."
+#endif
+#endif
 
 #ifdef USE_EDGE_INDEX_OFFSET
   EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
@@ -216,6 +265,17 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
   SpatialQueue<NodeID> squeue(num_banks, kMaxNumBin,
                               num_nodes_per_bank * kMaxNumBin * kDelta,
                               node_hash_shift, node_hash_mask);
+
+#ifdef USE_SPATIAL_FRONTIER
+  /**
+   * We also have a spatial queue for the frontier.
+   */
+  SpatialQueue<NodeID> sfrontier(num_banks, 1 /* nBins */,
+                                 num_nodes_per_bank * kDelta, node_hash_shift,
+                                 node_hash_mask);
+  sfrontier.enque(source, 0 /* binIdx */);
+
+#endif
 
 #endif
 
@@ -246,6 +306,17 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
                           sizeof(*squeue.meta), num_banks, 0, 0);
     m5_stream_nuca_align(squeue.data, dist_data, 0);
     m5_stream_nuca_align(squeue.meta, dist_data, num_nodes_per_bank);
+
+#ifdef USE_SPATIAL_FRONTIER
+    m5_stream_nuca_region("gap.sssp.sfrontier", sfrontier.data,
+                          sizeof(NodeID) * kDelta, num_nodes, 0, 0);
+    m5_stream_nuca_region("gap.sssp.sfrontier_meta", sfrontier.meta,
+                          sizeof(*sfrontier.meta), num_banks, 0, 0);
+    m5_stream_nuca_align(sfrontier.data, dist_data, 0);
+    m5_stream_nuca_align(sfrontier.meta, dist_data, num_nodes_per_bank);
+
+#endif
+
 #endif
 
     m5_stream_nuca_remap();
@@ -285,13 +356,22 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
     const auto squeue_bin_capacity = squeue.bin_capacity;
     const auto squeue_hash_shift = squeue.hash_shift;
     const auto squeue_hash_mask = squeue.hash_mask;
+
+#ifdef USE_SPATIAL_FRONTIER
+    const auto sfrontier_data = sfrontier.data;
+    const auto sfrontier_queue_capacity = sfrontier.queue_capacity;
+#endif
+
 #else
+
     vector<BinT> local_bins;
     local_bins.reserve(kMaxNumBin);
     for (int i = 0; i < kMaxNumBin; ++i) {
       local_bins.emplace_back(g.num_edges_directed());
     }
 #endif
+
+    WeightT *dist_data = dist.data();
 
     size_t iter = 0;
     while (shared_indexes[iter & 1] != kMaxBin) {
@@ -300,15 +380,31 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
       uint64_t local_processed_vertexes = 0;
 #endif
 
+      // Get the current bucket distance.
       WeightT curr_bin_weight =
           kDelta * static_cast<WeightT>(shared_indexes[iter & 1]);
+
+#ifdef USE_SPATIAL_FRONTIER
+/**
+ * We need to iterate through all spatial frontiers.
+ */
+#pragma omp for schedule(static) nowait
+      for (size_t frontier_idx = 0; frontier_idx < sfrontier.num_queues;
+           ++frontier_idx) {
+
+        const size_t frontier_size =
+            sfrontier.size(frontier_idx, 0 /* binIdx */);
+        NodeID *frontier_data =
+            sfrontier_data + frontier_idx * sfrontier_queue_capacity;
+        for (size_t i = 0; i < frontier_size; i++) {
+
+#else
       const size_t frontier_size = frontier_tails[iter & 1];
-      {
-        WeightT *dist_data = dist.data();
-        NodeID *frontier_data = frontier.data();
+      NodeID *frontier_data = frontier.data();
 
 #pragma omp for schedule(static) nowait
-        for (size_t i = 0; i < frontier_size; i++) {
+      for (size_t i = 0; i < frontier_size; i++) {
+#endif
 
 #pragma ss stream_name "gap.sssp.frontier.ld"
           NodeID u = frontier_data[i];
@@ -327,7 +423,7 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
 #ifdef USE_EDGE_INDEX_OFFSET
           WNode *out_ptr = out_edges + out_begin;
 #else
-          WNode *out_ptr = out_begin;
+        WNode *out_ptr = out_begin;
 #endif
 
           int64_t out_degree = out_end - out_begin;
@@ -380,38 +476,31 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
                             bin_idx * squeue_bin_capacity + queue_loc] = v;
 
 #else
-                size_t dest_bin = new_dist / kDelta;
+              size_t dest_bin = new_dist / kDelta;
 #ifndef GEM_FORGE
-                assert(dest_bin < local_bins.size());
+              assert(dest_bin < local_bins.size());
 #endif
-                local_bins[dest_bin].push_back(v);
+              local_bins[dest_bin].push_back(v);
 #endif
               }
             }
           }
         }
+
+#ifdef USE_SPATIAL_FRONTIER
       }
+#endif
 
       BinIndexT &curr_bin_index = shared_indexes[iter & 1];
       BinIndexT &next_bin_index = shared_indexes[(iter + 1) & 1];
-      size_t &curr_frontier_tail = frontier_tails[iter & 1];
-      size_t &next_frontier_tail = frontier_tails[(iter + 1) & 1];
 
       /**
        * Search for the local bin with smallest weight.
        */
 #ifdef USE_SPATIAL_QUEUE
 
-      // #pragma omp single
       {
-
-        // t.Stop();
-        // printf("%6zu%5d%11" PRId64 "  %10.5lf\n", iter, curr_bin_index,
-        //        curr_frontier_tail, t.Millisecs());
-        // t.Start();
-
         BinIndexT old_bin_index = curr_bin_index;
-
         findMinBinSpatial(old_bin_index, next_bin_index, squeue);
       }
 
@@ -423,6 +512,9 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
 #pragma omp barrier
 
 #ifndef GEM_FORGE
+#ifdef USE_SPATIAL_FRONTIER
+      size_t frontier_size = sfrontier.totalSize();
+#endif
       if (omp_get_thread_num() == 0) {
         t.Stop();
         printf("%6zu%5d%11" PRId64 " %4.2f %10.5lf\n", iter, curr_bin_weight,
@@ -437,18 +529,34 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
 
       // Clear the curr_bin_index.
       curr_bin_index = kMaxBin;
+
+#ifdef USE_SPATIAL_FRONTIER
+      // Clear the spatial frontier.
+      if (next_bin_index < kMaxBin) {
+        copySpatialQueueToSpatialFrontier(squeue, next_bin_index, sfrontier);
+      }
+
+#else
+      size_t &curr_frontier_tail = frontier_tails[iter & 1];
+      size_t &next_frontier_tail = frontier_tails[(iter + 1) & 1];
+
+      // Clear the frontier end.
       curr_frontier_tail = 0;
 
       if (next_bin_index < kMaxNumBin) {
         copySpatialQueueToGlobalFrontier(squeue, next_bin_index,
                                          next_frontier_tail, frontier.data());
       }
+#endif
 
       iter++;
 
 #else
 
       findMinBin(curr_bin_index, next_bin_index, local_bins);
+
+      size_t &curr_frontier_tail = frontier_tails[iter & 1];
+      size_t &next_frontier_tail = frontier_tails[(iter + 1) & 1];
 
 #pragma omp barrier
       if (next_bin_index < kMaxNumBin) {
