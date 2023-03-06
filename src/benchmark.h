@@ -11,12 +11,13 @@
 #include <utility>
 #include <vector>
 
+#include "adj_list_graph.h"
 #include "builder.h"
+#include "cluster.h"
 #include "graph.h"
 #include "timer.h"
 #include "util.h"
 #include "writer.h"
-#include "cluster.h"
 
 /*
 GAP Benchmark Suite
@@ -33,6 +34,9 @@ typedef NodeWeight<NodeID, WeightT> WNode;
 
 typedef CSRGraph<NodeID> Graph;
 typedef CSRGraph<NodeID, WNode> WGraph;
+
+typedef AdjListGraph<NodeID> AdjGraph;
+typedef AdjListGraph<NodeID, WNode> WAdjGraph;
 
 typedef BuilderBase<NodeID, NodeID, WeightT> Builder;
 typedef BuilderBase<NodeID, WNode, WeightT> WeightedBuilder;
@@ -109,7 +113,7 @@ void BenchmarkKernel(const CLApp &cli, const GraphT_ &g, GraphFunc kernel,
     trial_timer.Start();
     auto result = kernel(g);
     trial_timer.Stop();
-    PrintTime("Trial Time", trial_timer.Seconds());
+    PrintTime("Trial Time(s) ", trial_timer.Seconds());
     total_seconds += trial_timer.Seconds();
     if (cli.do_analysis() && (iter == (cli.num_trials() - 1)))
       stats(g, result);
@@ -118,10 +122,10 @@ void BenchmarkKernel(const CLApp &cli, const GraphT_ &g, GraphFunc kernel,
       PrintLabel("Verification",
                  verify(std::ref(g), std::ref(result)) ? "PASS" : "FAIL");
       trial_timer.Stop();
-      PrintTime("Verification Time", trial_timer.Seconds());
+      PrintTime("Verification Time(s)", trial_timer.Seconds());
     }
   }
-  PrintTime("Average Time", total_seconds / cli.num_trials());
+  PrintTime("Average Time(s)", total_seconds / cli.num_trials());
 }
 
 #endif // BENCHMARK_H_

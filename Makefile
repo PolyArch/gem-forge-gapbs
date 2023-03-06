@@ -16,7 +16,12 @@ ifneq ($(SERIAL), 1)
 	CXX_FLAGS += $(PAR_FLAG)
 endif
 
-KERNELS = bc bfs bfs_pull bfs_pull_shuffle cc cc_sv pr_pull pr_pull_shuffle pr_push tc
+KERNELS = bc bfs bfs_pull bfs_pull_shuffle cc cc_sv tc
+KERNELS += pr_pull
+KERNELS += pr_pull_shuffle
+KERNELS += pr_push
+KERNELS += pr_push_adj_rnd
+KERNELS += pr_push_adj_lnr
 KERNELS += bfs_push
 KERNELS += bfs_push_spatial
 KERNELS += bfs_push_offset

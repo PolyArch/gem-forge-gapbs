@@ -13,6 +13,8 @@
 #include "graph.h"
 #include "pvector.h"
 
+#include "pr_kernels.h"
+
 #ifdef GEM_FORGE
 #include "gem5/m5ops.h"
 #endif
@@ -34,36 +36,14 @@ USE_EDGE_INDEX_OFFSET: Use index_offset instead of the pointer index.
 OMP_SCHEDULE_TYPE: Control how OpenMP schedules the computation.
 SCORES_OFFSET_BYTES: Bytes offset between scores and next_scores.
 USE_DOUBLE_SCORE_T: Use double for scores.
+USE_ADJ_LIST: Use adjacent list instead of CSR.
 */
 
 using namespace std;
 
-#ifdef USE_DOUBLE_SCORE_T
-typedef double ScoreT;
-#else
-typedef float ScoreT;
-#endif
-
-#ifndef OMP_SCHEDULE_TYPE
-#define OMP_SCHEDULE_TYPE schedule(static)
-#endif
-
-#ifndef SCORES_OFFSET_BYTES
-#define SCORES_OFFSET_BYTES 0
-#endif
-
-#ifdef USE_EDGE_INDEX_OFFSET
-#define EdgeIndexT NodeID
-#else
-#define EdgeIndexT NodeID *
-#endif // USE_EDGE_INDEX_OFFSET
-
-const float kDamp = 0.85;
-
 pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
                              int warm_cache = 2, int num_threads = 1) {
   const auto num_nodes = g.num_nodes();
-  const auto num_edges = g.num_edges_directed();
   NodeID *out_edges = g.out_edges();
   const ScoreT init_score = 1.0f / num_nodes;
   const ScoreT base_score = (1.0f - kDamp) / num_nodes;
@@ -101,35 +81,6 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
   ScoreT *scores_data = scores.data();
   ScoreT *next_scores_data = next_scores.data();
 
-#ifdef USE_EDGE_INDEX_OFFSET
-  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
-#else
-  EdgeIndexT *out_neigh_index = g.out_neigh_index();
-#endif // USE_EDGE_INDEX_OFFSET
-
-#ifdef GEM_FORGE
-
-  m5_stream_nuca_region("gap.pr_push.score", scores_data, sizeof(ScoreT),
-                        num_nodes, 0, 0);
-  m5_stream_nuca_region("gap.pr_push.next_score", next_scores_data,
-                        sizeof(ScoreT), num_nodes, 0, 0);
-  m5_stream_nuca_region("gap.pr_push.out_neigh_index", out_neigh_index,
-                        sizeof(EdgeIndexT), num_nodes, 0, 0);
-  m5_stream_nuca_region("gap.pr_push.out_edge", out_edges, sizeof(NodeID),
-                        num_edges, 0, 0);
-  m5_stream_nuca_set_property(next_scores_data,
-                              STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                              roundUpPow2(num_nodes / 64));
-  m5_stream_nuca_align(scores_data, next_scores_data, 0);
-  m5_stream_nuca_align(out_neigh_index, next_scores_data, 0);
-  m5_stream_nuca_align(out_edges, next_scores_data,
-                       m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
-  m5_stream_nuca_align(out_edges, out_neigh_index,
-                       m5_stream_nuca_encode_csr_index());
-  m5_stream_nuca_remap();
-
-#endif // GEM_FORGE
-
 #ifdef SHUFFLE_NODES
   // Shuffle the nodes.
   int64_t num_nodes = g.num_nodes();
@@ -148,6 +99,58 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
 #endif
 
 #ifdef GEM_FORGE
+  m5_stream_nuca_region("gap.pr_push.score", scores_data, sizeof(ScoreT),
+                        num_nodes, 0, 0);
+  m5_stream_nuca_region("gap.pr_push.next_score", next_scores_data,
+                        sizeof(ScoreT), num_nodes, 0, 0);
+  m5_stream_nuca_set_property(next_scores_data,
+                              STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                              roundUpPow2(num_nodes / 64));
+  m5_stream_nuca_align(scores_data, next_scores_data, 0);
+#ifndef USE_ADJ_LIST
+  const auto num_edges = g.num_edges_directed();
+
+#ifdef USE_EDGE_INDEX_OFFSET
+  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
+#else
+  EdgeIndexT *out_neigh_index = g.out_neigh_index();
+#endif // USE_EDGE_INDEX_OFFSET
+
+  m5_stream_nuca_region("gap.pr_push.out_neigh_index", out_neigh_index,
+                        sizeof(EdgeIndexT), num_nodes, 0, 0);
+  m5_stream_nuca_region("gap.pr_push.out_edge", out_edges, sizeof(NodeID),
+                        num_edges, 0, 0);
+  m5_stream_nuca_align(out_neigh_index, next_scores_data, 0);
+  m5_stream_nuca_align(out_edges, next_scores_data,
+                       m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
+  m5_stream_nuca_align(out_edges, out_neigh_index,
+                       m5_stream_nuca_encode_csr_index());
+#endif
+#endif // GEM_FORGE
+
+#ifdef USE_ADJ_LIST
+  printf("Start to build AdjListGraph, node %luB.\n",
+         sizeof(AdjGraph::AdjListNode));
+
+#ifndef GEM_FORGE
+  Timer adjBuildTimer;
+  adjBuildTimer.Start();
+#endif // GEM_FORGE
+  AdjGraph adjGraph(num_threads, g.num_nodes(), g.out_neigh_index_offset(),
+                    out_edges, next_scores_data);
+#ifndef GEM_FORGE
+  adjBuildTimer.Stop();
+  printf("AdjListGraph built %10.5lfs.\n", adjBuildTimer.Seconds());
+#else
+  printf("AdjListGraph built.\n");
+#endif // GEM_FORGE
+#endif // USE_ADJ_LIST
+
+#ifdef GEM_FORGE
+  m5_stream_nuca_remap();
+#endif // GEM_FORGE
+
+#ifdef GEM_FORGE
   m5_detail_sim_start();
   if (warm_cache > 0) {
 #ifdef SHUFFLE_NODES
@@ -156,11 +159,40 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
     gf_warm_array("scores", scores_data, num_nodes * sizeof(scores_data[0]));
     gf_warm_array("next_scores", next_scores_data,
                   num_nodes * sizeof(next_scores_data[0]));
+
+#ifdef USE_ADJ_LIST
+    gf_warm_array("degrees", adjGraph.degrees,
+                  num_nodes * sizeof(adjGraph.degrees[0]));
+    gf_warm_array("adj_list", adjGraph.adjList,
+                  num_nodes * sizeof(adjGraph.adjList[0]));
+
+    // Warm up the adjacent list.
+    {
+      printf("Start warming AdjList.\n");
+      auto adj_list = adjGraph.adjList;
+#pragma omp parallel for schedule(static) firstprivate(adj_list)
+      for (int64_t i = 0; i < num_nodes; i++) {
+
+        int64_t n = i;
+
+        auto *cur_node = adj_list[n];
+
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+        while (cur_node) {
+          volatile auto next_node = cur_node->next;
+          cur_node = next_node;
+        }
+      }
+      printf("Warmed AdjList.\n");
+    }
+
+#else // Warm up CSR list.
     gf_warm_array("out_neigh_index", out_neigh_index,
                   num_nodes * sizeof(out_neigh_index[0]));
     if (warm_cache > 1) {
       gf_warm_array("out_edges", out_edges, num_edges * sizeof(out_edges[0]));
     }
+#endif
 
     std::cout << "Warm up done.\n";
   }
@@ -188,55 +220,24 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
 
 #ifndef DISABLE_KERNEL1
 
+#ifdef USE_ADJ_LIST
+    pageRankPushAdjList(adjGraph,
 #ifdef SHUFFLE_NODES
-
-#pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(                       \
-    scores_data, out_neigh_index, out_edges, next_scores_data, nodes_data)
-    for (int64_t i = 0; i < g.num_nodes(); i++) {
-
-#pragma ss stream_name "gap.pr_push.atomic.node.ld"
-      NodeID n = nodes_data[i];
+                        nodes_data,
+#endif
+                        scores_data, next_scores_data);
 
 #else
 
-#pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(                       \
-    scores_data, out_neigh_index, out_edges, next_scores_data)
-    for (int64_t i = 0; i < g.num_nodes(); i++) {
-
-      int64_t n = i;
-
-#endif // SHUFFLE_NODES
-
-      EdgeIndexT *out_neigh_ptr = out_neigh_index + n;
-
-#pragma ss stream_name "gap.pr_push.atomic.score.ld"
-      ScoreT score = scores_data[n];
-
-#pragma ss stream_name "gap.pr_push.atomic.out_begin.ld"
-      EdgeIndexT out_begin = out_neigh_ptr[0];
-
-#pragma ss stream_name "gap.pr_push.atomic.out_end.ld"
-      EdgeIndexT out_end = out_neigh_ptr[1];
-
-#ifdef USE_EDGE_INDEX_OFFSET
-      NodeID *out_ptr = out_edges + out_begin;
-#else
-      NodeID *out_ptr = out_begin;
+    pageRankPushCSR(g.num_nodes(),
+#ifdef SHUFFLE_NODES
+                    nodes_data,
 #endif
+                    scores_data, next_scores_data, out_neigh_index, out_edges);
 
-      int64_t out_degree = out_end - out_begin;
-      ScoreT outgoing_contrib = score / out_degree;
-      for (int64_t j = 0; j < out_degree; ++j) {
+#endif // USE_ADJ_LIST
 
-#pragma ss stream_name "gap.pr_push.atomic.out_v.ld"
-        NodeID v = out_ptr[j];
-
-#pragma ss stream_name "gap.pr_push.atomic.next.at"
-        __atomic_fetch_fadd(next_scores_data + v, outgoing_contrib,
-                            __ATOMIC_RELAXED);
-      }
-    }
-#endif
+#endif // DISABLE_KERNEL1
 
 #ifdef GEM_FORGE
     m5_work_end(0, 0);
@@ -332,7 +333,7 @@ int main(int argc, char *argv[]) {
     return -1;
 
   if (cli.num_threads() != -1) {
-    printf("%d.\n", cli.num_threads());
+    printf("NumThreads = %d.\n", cli.num_threads());
     omp_set_num_threads(cli.num_threads());
   }
 

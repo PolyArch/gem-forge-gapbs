@@ -81,7 +81,7 @@ typedef int64_t SGOffset;
  * Aligned: Each vertex's edge list start aligns with specified granularity.
  */
 
-template <class NodeID_, class DestID_ = NodeID_, bool MakeInverse = true>
+template <class NodeID_, class DestID_ = NodeID_, bool MakeInverse_ = true>
 class CSRGraph {
   // Used for *non-negative* offsets within a neighborhood
   typedef std::make_unsigned<std::ptrdiff_t>::type OffsetT;
@@ -199,7 +199,7 @@ public:
   }
 
   int64_t in_degree(NodeID_ v) const {
-    static_assert(MakeInverse, "Graph inversion disabled but reading inverse");
+    static_assert(MakeInverse_, "Graph inversion disabled but reading inverse");
     return in_index_[v + 1] - in_index_[v];
   }
 
@@ -208,7 +208,7 @@ public:
   }
 
   Neighborhood in_neigh(NodeID_ n, OffsetT start_offset = 0) const {
-    static_assert(MakeInverse, "Graph inversion disabled but reading inverse");
+    static_assert(MakeInverse_, "Graph inversion disabled but reading inverse");
     return Neighborhood(n, in_index_, start_offset);
   }
 
@@ -216,17 +216,17 @@ public:
   NodeID_ *out_neigh_index_offset() const { return out_index_offset_; }
 
   DestID_ **in_neigh_index() const {
-    static_assert(MakeInverse, "Graph inversion disabled but reading inverse");
+    static_assert(MakeInverse_, "Graph inversion disabled but reading inverse");
     return in_index_;
   }
   NodeID_ *in_neigh_index_offset() const {
-    static_assert(MakeInverse, "Graph inversion disabled but reading inverse");
+    static_assert(MakeInverse_, "Graph inversion disabled but reading inverse");
     return in_index_offset_;
   }
 
   DestID_ *out_edges() const { return out_neighbors_; }
   DestID_ *in_edges() const {
-    static_assert(MakeInverse, "Graph inversion disabled but reading inverse");
+    static_assert(MakeInverse_, "Graph inversion disabled but reading inverse");
     return in_neighbors_;
   }
 

@@ -8,6 +8,7 @@
 #include <omp.h>
 #include <stdio.h>
 #include <string>
+#include <cassert>
 
 #include "timer.h"
 
