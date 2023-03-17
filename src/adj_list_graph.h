@@ -10,14 +10,11 @@
 #include "gem5/m5ops.h"
 #endif
 
-#ifndef ADJ_LIST_EDGES_PER_NODE
-#define ADJ_LIST_EDGES_PER_NODE 10
-#endif
-
-template <class NodeID_, class DestID_ = NodeID_, bool MakeInverse_ = true>
+template <class NodeID_, class DestID_ = NodeID_, bool MakeInverse_ = true,
+          int EdgeOffset_ = 0, int EdgeSize_ = sizeof(DestID_)>
 class AdjListGraph {
 public:
-  constexpr static int EdgesPerNode = ADJ_LIST_EDGES_PER_NODE;
+  constexpr static int EdgesPerNode = sizeof(DestID_) == 8 ? 5 : 10;
 
   struct AdjListNode {
     int64_t numEdges = 0;
@@ -109,12 +106,12 @@ public:
           auto regionName = "gap.pr_push.adj/" + std::to_string(arenaIdx);
           m5_stream_nuca_region(regionName.c_str(), arena, sizeof(AdjListNode),
                                 ArenaSize, 0, 0);
-          m5_stream_nuca_align(
-              arena, properties,
-              m5_stream_nuca_encode_multi_ind(
-                  offsetof(AdjListNode, numEdges), sizeof(dummyNode->numEdges),
-                  offsetof(AdjListNode, edges), sizeof(*dummyNode->edges),
-                  sizeof(*dummyNode->edges)));
+          m5_stream_nuca_align(arena, properties,
+                               m5_stream_nuca_encode_multi_ind(
+                                   offsetof(AdjListNode, numEdges),
+                                   sizeof(dummyNode->numEdges),
+                                   offsetof(AdjListNode, edges) + EdgeOffset_,
+                                   EdgeSize_, sizeof(*dummyNode->edges)));
 
           arena = arena->next;
           arenaIdx++;
@@ -152,6 +149,26 @@ public:
     auto *node = new (n) AdjListNode();
     return node;
 #endif
+  }
+
+  void warmAdjList() {
+    // Warm up the adjacent list.
+    printf("Start warming AdjList.\n");
+    auto adj_list = this->adjList;
+#pragma omp parallel for schedule(static) firstprivate(adj_list)
+    for (int64_t i = 0; i < this->N; i++) {
+
+      int64_t n = i;
+
+      auto *cur_node = adj_list[n];
+
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+      while (cur_node) {
+        volatile auto next_node = cur_node->next;
+        cur_node = next_node;
+      }
+    }
+    printf("Warmed AdjList.\n");
   }
 };
 

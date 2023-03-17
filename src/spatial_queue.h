@@ -55,8 +55,18 @@ public:
   void clear(int queue_idx, int bin_idx) {
     this->meta[queue_idx].size[bin_idx] = 0;
   }
+  bool empty() const {
+    for (int queue_idx = 0; queue_idx < this->num_queues; ++queue_idx) {
+      for (int bin_idx = 0; bin_idx < this->num_bins; ++bin_idx) {
+        if (this->size(queue_idx, bin_idx) > 0) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
 
-  int getQueueIdx(T v) const { return (v >> hash_mask) & hash_mask; }
+  int getQueueIdx(T v) const { return (v >> hash_shift) & hash_mask; }
   void enque(T v, int bin_idx) {
     auto queue_idx = getQueueIdx(v);
     auto loc = this->meta[queue_idx].size[bin_idx]++;

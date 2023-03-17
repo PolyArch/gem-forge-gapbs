@@ -225,7 +225,8 @@ copySpatialQueueToSpatialFrontier(SpatialQueue<NodeID> &squeue,
   }
 }
 
-pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
+pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
+                           int warm_cache) {
   Timer t;
 
   // two element arrays for double buffering curr=iter&1, next=(iter+1)&1
@@ -241,15 +242,17 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
 #endif
 #endif
 
+#ifndef USE_ADJ_LIST
 #ifdef USE_EDGE_INDEX_OFFSET
   EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
 #else
   EdgeIndexT *out_neigh_index = g.out_neigh_index();
 #endif // USE_EDGE_INDEX_OFFSET
   WNode *out_edges = g.out_edges();
-  auto num_nodes = g.num_nodes();
   auto num_edges = g.num_edges_directed();
+#endif
 
+  auto num_nodes = g.num_nodes();
   pvector<WeightT> dist(g.num_nodes(), kDistInf);
   dist[source] = 0;
 
@@ -285,18 +288,22 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
 
     m5_stream_nuca_region("gap.sssp.dist", dist_data, sizeof(WeightT),
                           num_nodes, 0, 0);
+    m5_stream_nuca_set_property(
+        dist_data, STREAM_NUCA_REGION_PROPERTY_INTERLEAVE, num_nodes_per_bank);
+
+#ifndef USE_ADJ_LIST
+
     m5_stream_nuca_region("gap.sssp.out_neigh_index", out_neigh_index,
                           sizeof(EdgeIndexT), num_nodes, 0, 0);
     m5_stream_nuca_region("gap.sssp.out_edge", out_edges, sizeof(WNode),
                           num_edges, 0, 0);
-    m5_stream_nuca_set_property(
-        dist_data, STREAM_NUCA_REGION_PROPERTY_INTERLEAVE, num_nodes_per_bank);
     m5_stream_nuca_align(out_neigh_index, dist_data, 0);
     m5_stream_nuca_align(out_edges, dist_data,
                          m5_stream_nuca_encode_ind_align(
                              offsetof(WNode, v), sizeof(((WNode *)0)->v)));
     m5_stream_nuca_align(out_edges, out_neigh_index,
                          m5_stream_nuca_encode_csr_index());
+#endif
 
 #ifdef USE_SPATIAL_QUEUE
     m5_stream_nuca_region("gap.sssp.squeue", squeue.data,
@@ -315,13 +322,30 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
     m5_stream_nuca_align(sfrontier.data, dist_data, 0);
     m5_stream_nuca_align(sfrontier.meta, dist_data, num_nodes_per_bank);
 
-#endif
-
-#endif
-
-    m5_stream_nuca_remap();
+#endif // USE_SPATIAL_FRONTIER
+#endif // USE_SPATIAL_QUEUE
   }
+#endif // GEM_FORGE
 
+#ifdef USE_ADJ_LIST
+  printf("Start to build AdjListGraph, node %luB.\n",
+         sizeof(WAdjGraph::AdjListNode));
+#ifndef GEM_FORGE
+  Timer adjBuildTimer;
+  adjBuildTimer.Start();
+#endif // GEM_FORGE
+  WAdjGraph adjGraph(num_threads, g.num_nodes(), g.out_neigh_index_offset(),
+                     g.out_edges(), dist.data());
+#ifndef GEM_FORGE
+  adjBuildTimer.Stop();
+  printf("AdjListGraph built %10.5lfs.\n", adjBuildTimer.Seconds());
+#else
+  printf("AdjListGraph built.\n");
+#endif // GEM_FORGE
+#endif // USE_ADJ_LIST
+
+#ifdef GEM_FORGE
+  m5_stream_nuca_remap();
 #endif
 
   t.Start();
@@ -330,13 +354,23 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
   m5_detail_sim_start();
   if (warm_cache > 0) {
     WeightT *dist_data = dist.data();
+    gf_warm_array("dist", dist_data, num_nodes * sizeof(dist_data[0]));
+
+#ifdef USE_ADJ_LIST
+    gf_warm_array("adj_list", adjGraph.adjList,
+                  num_nodes * sizeof(adjGraph.adjList[0]));
+
+    if (warm_cache > 1) {
+      adjGraph.warmAdjList();
+    }
+#else
     gf_warm_array("out_neigh_index", out_neigh_index,
                   num_nodes * sizeof(out_neigh_index[0]));
-    gf_warm_array("dist", dist_data, num_nodes * sizeof(dist_data[0]));
     if (warm_cache > 1) {
       WNode *out_edges = g.out_edges();
       gf_warm_array("out_edges", out_edges, num_edges * sizeof(out_edges[0]));
     }
+#endif
     std::cout << "Warm up done.\n";
   }
   m5_reset_stats(0, 0);
@@ -346,7 +380,12 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
   uint64_t processed_vertexes = 0;
 #endif
 
+#ifdef USE_ADJ_LIST
+  auto adj_list = adjGraph.adjList;
+#pragma omp parallel firstprivate(adj_list)
+#else
 #pragma omp parallel firstprivate(out_neigh_index, out_edges)
+#endif
   {
 
 #ifdef USE_SPATIAL_QUEUE
@@ -412,68 +451,100 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
 #pragma ss stream_name "gap.sssp.dist.ld"
           WeightT u_dist = dist_data[u];
 
-          EdgeIndexT *out_neigh_ptr = out_neigh_index + u;
+#ifdef USE_ADJ_LIST
+
+#pragma ss stream_name "gap.sssp.adj.node.ld"
+          auto *cur_node = adj_list[u];
+
+          /**
+           * I need to fuse them into a single condition check with
+           * do while loop below so that BBPredDataGraph can handle it.
+           */
+          if (cur_node != nullptr && u_dist >= curr_bin_weight) {
+
+#else
+
+        EdgeIndexT *out_neigh_ptr = out_neigh_index + u;
 
 #pragma ss stream_name "gap.sssp.out_begin.ld"
-          EdgeIndexT out_begin = out_neigh_ptr[0];
+        EdgeIndexT out_begin = out_neigh_ptr[0];
 
 #pragma ss stream_name "gap.sssp.out_end.ld"
-          EdgeIndexT out_end = out_neigh_ptr[1];
+        EdgeIndexT out_end = out_neigh_ptr[1];
 
 #ifdef USE_EDGE_INDEX_OFFSET
-          WNode *out_ptr = out_edges + out_begin;
+        WNode *out_ptr = out_edges + out_begin;
 #else
         WNode *out_ptr = out_begin;
 #endif
 
-          int64_t out_degree = out_end - out_begin;
+        int64_t out_degree = out_end - out_begin;
 
-          if (u_dist >= curr_bin_weight) {
+        if (u_dist >= curr_bin_weight) {
+
+#endif // USE_ADJ_LIST
 
 #ifndef GEM_FORGE
             local_processed_vertexes++;
 #endif
 
-            /**
-             * Zhengrong: Rewrite using iterators to introduce IV.
-             * Avoid the fake pointer chasing pattern in original IR.
-             */
-            for (int64_t i = 0; i < out_degree; ++i) {
+#ifdef USE_ADJ_LIST
 
-              const WNode &wn = out_ptr[i];
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+            do {
+
+#pragma ss stream_name "gap.sssp.adj.n_edges.ld"
+              const auto numEdges = cur_node->numEdges;
+
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+              for (int64_t j = 0; j < numEdges; ++j) {
+
+                const WNode &wn = cur_node->edges[j];
+#else
+
+          /**
+           * Zhengrong: Rewrite using iterators to introduce IV.
+           * Avoid the fake pointer chasing pattern in original IR.
+           */
+          for (int64_t i = 0; i < out_degree; ++i) {
+
+            const WNode &wn = out_ptr[i];
+
+#endif // USE_ADJ_LIST
 
 #pragma ss stream_name "gap.sssp.out_w.ld"
-              const WeightT weight = wn.w;
+                const WeightT weight = wn.w;
 
 #pragma ss stream_name "gap.sssp.out_v.ld"
-              const NodeID v = wn.v;
+                const NodeID v = wn.v;
 
-              WeightT new_dist = u_dist + weight;
+                WeightT new_dist = u_dist + weight;
 
 #pragma ss stream_name "gap.sssp.min.at"
-              WeightT old_dist =
-                  __atomic_fetch_min(&dist_data[v], new_dist, __ATOMIC_RELAXED);
+                WeightT old_dist = __atomic_fetch_min(&dist_data[v], new_dist,
+                                                      __ATOMIC_RELAXED);
 
-              if (old_dist > new_dist) {
+                if (old_dist > new_dist) {
 
 #ifdef USE_SPATIAL_QUEUE
-                /**
-                 * Hash into the spatial queue and bin within each queue.
-                 */
-                auto queue_idx = (v >> squeue_hash_shift) & squeue_hash_mask;
-                auto bin_idx = new_dist / kDelta;
+                  /**
+                   * Hash into the spatial queue and bin within each queue.
+                   */
+                  auto queue_idx = (v >> squeue_hash_shift) & squeue_hash_mask;
+                  auto bin_idx = new_dist / kDelta;
 
 #ifndef GEM_FORGE
-                assert(bin_idx < kMaxNumBin);
+                  assert(bin_idx < kMaxNumBin);
 #endif
 
 #pragma ss stream_name "gap.sssp.enque.at"
-                auto queue_loc = __atomic_fetch_add(
-                    &squeue_meta[queue_idx].size[bin_idx], 1, __ATOMIC_RELAXED);
+                  auto queue_loc =
+                      __atomic_fetch_add(&squeue_meta[queue_idx].size[bin_idx],
+                                         1, __ATOMIC_RELAXED);
 
 #pragma ss stream_name "gap.sssp.enque.st"
-                squeue_data[queue_idx * squeue_queue_capacity +
-                            bin_idx * squeue_bin_capacity + queue_loc] = v;
+                  squeue_data[queue_idx * squeue_queue_capacity +
+                              bin_idx * squeue_bin_capacity + queue_loc] = v;
 
 #else
               size_t dest_bin = new_dist / kDelta;
@@ -481,10 +552,19 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int warm_cache) {
               assert(dest_bin < local_bins.size());
 #endif
               local_bins[dest_bin].push_back(v);
+#endif // USE_SPATIAL_QUEUE
+
+                } // old_dist > new_dist
+              }   // Out vertex.
+
+#ifdef USE_ADJ_LIST
+#pragma ss stream_name "gap.sssp.adj.next_node.ld"
+              auto next_node = cur_node->next;
+
+              cur_node = next_node;
+            } while (cur_node);
 #endif
-              }
-            }
-          }
+          } // u_dist > cur_bin_dist.
         }
 
 #ifdef USE_SPATIAL_FRONTIER
@@ -649,7 +729,7 @@ int main(int argc, char *argv[]) {
   }
   SourcePicker<WGraph> sp(g, given_sources);
   auto SSSPBound = [&sp, &cli](const WGraph &g) {
-    return DeltaStep(g, sp.PickNext(), cli.warm_cache());
+    return DeltaStep(g, sp.PickNext(), cli.num_threads(), cli.warm_cache());
   };
   SourcePicker<WGraph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const WGraph &g, const pvector<WeightT> &dist) {

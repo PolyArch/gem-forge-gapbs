@@ -1,23 +1,18 @@
 // Copyright (c) 2015, The Regents of the University of California (Regents)
 // See LICENSE.txt for license details
 
+#include "bfs_kernels.h"
+
 #include <iostream>
 #include <vector>
 
 #include <omp.h>
 
-#include "benchmark.h"
 #include "bitmap.h"
-#include "builder.h"
 #include "command_line.h"
-#include "graph.h"
 #include "platform_atomics.h"
-#include "pvector.h"
-#include "sized_array.h"
 #include "sliding_queue.h"
 #include "source_generator.h"
-#include "spatial_queue.h"
-#include "timer.h"
 
 #ifdef GEM_FORGE
 #include "gem5/m5ops.h"
@@ -57,157 +52,10 @@ USE_SPATIAL_QUEUE: Use a spatially localized queue instead of default thread
 
 using namespace std;
 
-#ifdef USE_EDGE_INDEX_OFFSET
-#define EdgeIndexT NodeID
-#else
-#define EdgeIndexT NodeID *
-#endif // USE_EDGE_INDEX_OFFSET
-
-#ifndef OMP_SCHEDULE
-#define OMP_SCHEDULE static
-#endif
-
-const NodeID InitParentId = -1;
-
-void TDStep(const Graph &g, pvector<NodeID> &parent,
-
-#ifdef USE_SPATIAL_QUEUE
-            SpatialQueue<NodeID> &squeue,
-#endif
-
-            SlidingQueue<NodeID> &queue) {
-  auto parent_v = parent.data();
-  auto queue_v = queue.begin();
-  auto queue_e = queue.end();
-  int64_t queue_size = queue_e - queue_v;
-
-#ifdef USE_SPATIAL_QUEUE
-  const auto squeue_data = squeue.data;
-  const auto squeue_meta = squeue.meta;
-  const auto squeue_capacity = squeue.queue_capacity;
-  const auto squeue_hash_shift = squeue.hash_shift;
-  const auto squeue_hash_mask = squeue.hash_mask;
-#endif
-
-  NodeID *out_edges = g.out_edges();
-#ifdef USE_EDGE_INDEX_OFFSET
-  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
-#else
-  EdgeIndexT *out_neigh_index = g.out_neigh_index();
-#endif
-
-  /**
-   * Helper function for debug perpose.
-   */
-  // {
-  //   static int iter = 0;
-  //   uint64_t totalIdx = 0;
-  //   for (auto iter = queue_v; iter < queue_e; iter++) {
-  //     NodeID u = *iter;
-  //     totalIdx += u;
-  //   }
-  //   printf(" - TD %d Size %ld Total %lu.\n", iter, queue_e - queue_v,
-  //   totalIdx); iter++;
-  // }
-#ifdef USE_SPATIAL_QUEUE
-#pragma omp parallel firstprivate(                                             \
-    queue_v, queue_size, parent_v, out_neigh_index, out_edges, squeue_data,    \
-    squeue_meta, squeue_capacity, squeue_hash_shift, squeue_hash_mask)
-#else
-#pragma omp parallel firstprivate(queue_v, queue_size, parent_v,               \
-                                  out_neigh_index, out_edges)
-#endif
-  {
-
-#ifndef USE_SPATIAL_QUEUE
-    SizedArray<NodeID> lqueue(g.num_nodes());
-#endif
-
-#pragma omp for schedule(OMP_SCHEDULE)
-    for (int64_t i = 0; i < queue_size; ++i) {
-
-#pragma ss stream_name "gap.bfs_push.u.ld"
-      NodeID u = queue_v[i];
-
-      // Explicit write this out to aviod u + 1.
-      EdgeIndexT *out_neigh_ptr = out_neigh_index + u;
-
-#pragma ss stream_name "gap.bfs_push.out_begin.ld"
-      EdgeIndexT out_begin = out_neigh_ptr[0];
-
-#pragma ss stream_name "gap.bfs_push.out_end.ld"
-      EdgeIndexT out_end = out_neigh_ptr[1];
-
-#ifdef USE_EDGE_INDEX_OFFSET
-      NodeID *out_ptr = out_edges + out_begin;
-#else
-      NodeID *out_ptr = out_begin;
-#endif
-
-      const auto out_degree = out_end - out_begin;
-
-      for (int64_t j = 0; j < out_degree; ++j) {
-
-#pragma ss stream_name "gap.bfs_push.out_v.ld"
-        NodeID v = out_ptr[j];
-
-        NodeID temp = InitParentId;
-
-#pragma ss stream_name "gap.bfs_push.swap.at"
-        bool swapped = __atomic_compare_exchange_n(
-            parent_v + v, &temp, u, false /* weak */, __ATOMIC_RELAXED,
-            __ATOMIC_RELAXED);
-        if (swapped) {
-
-#ifdef USE_SPATIAL_QUEUE
-
-          /**
-           * Hash into the spatial queue.
-           */
-          auto queue_idx = (v >> squeue_hash_shift) & squeue_hash_mask;
-
-#pragma ss stream_name "gap.bfs_push.enque.at"
-          auto queue_loc = __atomic_fetch_add(&squeue_meta[queue_idx].size[0],
-                                              1, __ATOMIC_RELAXED);
-
-#pragma ss stream_name "gap.bfs_push.enque.st"
-          squeue_data[queue_idx * squeue_capacity + queue_loc] = v;
-
-#else
-          lqueue.buffer[lqueue.num_elements++] = v;
-#endif
-        }
-      }
-    }
-
-    // There is an implicit barrier after pragma for.
-    // Flush into the global queue.
-
-#ifdef USE_SPATIAL_QUEUE
-
-#pragma omp for schedule(static)
-    for (int queue_idx = 0; queue_idx < squeue.num_queues; ++queue_idx) {
-      queue.append(squeue.data + queue_idx * squeue.queue_capacity,
-                   squeue.size(queue_idx, 0));
-      squeue.clear(queue_idx, 0);
-    }
-
-#else
-    queue.append(lqueue.begin(), lqueue.size());
-    lqueue.clear();
-#endif
-  }
-
-  return;
-}
-
-pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
-                      int beta = 18, int warm_cache = 2) {
+pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
+                      int alpha = 15, int beta = 18, int warm_cache = 2) {
   PrintStep("Source", static_cast<int64_t>(source));
   Timer t;
-  SlidingQueue<NodeID> queue(g.num_nodes());
-  queue.push_back(source);
-  queue.slide_window();
   Bitmap curr(g.num_nodes());
   curr.reset();
   Bitmap front(g.num_nodes());
@@ -231,8 +79,32 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
                               node_hash_shift, node_hash_mask);
 #endif
 
+#ifdef USE_SPATIAL_FRONTIER
+  // Another queue for frontier.
+  SpatialQueue<NodeID> squeue2(num_banks, 1 /* num_bins */, num_nodes_per_bank,
+                               node_hash_shift, node_hash_mask);
+  squeue2.enque(source, 0);
+  {
+    auto queue_idx = squeue2.getQueueIdx(source);
+    printf("Source mask %d shift %d nodes_per_bank %d %d %d %d %d.\n",
+           node_hash_mask, node_hash_shift, num_nodes_per_bank, source,
+           queue_idx, squeue2.size(0, 0), squeue2.size(queue_idx, 0));
+  }
+#else
+  SlidingQueue<NodeID> queue(g.num_nodes());
+  queue.push_back(source);
+  queue.slide_window();
+#endif
+
 #ifdef GEM_FORGE
   {
+    NodeID *parent_data = parent.data();
+    m5_stream_nuca_region("gap.bfs_push.parent", parent_data, sizeof(NodeID),
+                          num_nodes, 0, 0);
+    m5_stream_nuca_set_property(parent_data,
+                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                num_nodes_per_bank);
+#ifndef USE_ADJ_LIST
     const auto num_edges = g.num_edges_directed();
 #ifdef USE_EDGE_INDEX_OFFSET
     EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
@@ -240,21 +112,16 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
     EdgeIndexT *out_neigh_index = g.out_neigh_index();
 #endif // USE_EDGE_INDEX_OFFSET
     NodeID *out_edges = g.out_edges();
-    NodeID *parent_data = parent.data();
-    m5_stream_nuca_region("gap.bfs_push.parent", parent_data, sizeof(NodeID),
-                          num_nodes, 0, 0);
     m5_stream_nuca_region("gap.bfs_push.out_neigh_index", out_neigh_index,
                           sizeof(EdgeIndexT), num_nodes, 0, 0);
     m5_stream_nuca_region("gap.bfs_push.out_edge", out_edges, sizeof(NodeID),
                           num_edges, 0, 0);
-    m5_stream_nuca_set_property(parent_data,
-                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                                num_nodes_per_bank);
     m5_stream_nuca_align(out_neigh_index, parent_data, 0);
     m5_stream_nuca_align(out_edges, parent_data,
                          m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
     m5_stream_nuca_align(out_edges, out_neigh_index,
                          m5_stream_nuca_encode_csr_index());
+#endif
 
 #ifdef USE_SPATIAL_QUEUE
     m5_stream_nuca_region("gap.bfs_push.squeue", squeue.data, sizeof(NodeID),
@@ -263,31 +130,84 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
                           sizeof(*squeue.meta), num_banks, 0, 0);
     m5_stream_nuca_align(squeue.data, parent_data, 0);
     m5_stream_nuca_align(squeue.meta, parent_data, num_nodes_per_bank);
-#endif
 
-    m5_stream_nuca_remap();
+#ifdef USE_SPATIAL_FRONTIER
+    m5_stream_nuca_region("gap.bfs_push.squeue2", squeue2.data, sizeof(NodeID),
+                          num_nodes, 0, 0);
+    m5_stream_nuca_region("gap.bfs_push.squeue2_meta", squeue2.meta,
+                          sizeof(*squeue2.meta), num_banks, 0, 0);
+    m5_stream_nuca_align(squeue2.data, parent_data, 0);
+    m5_stream_nuca_align(squeue2.meta, parent_data, num_nodes_per_bank);
+#endif
+#endif
   }
 #endif
+
+#ifdef USE_ADJ_LIST
+  printf("Start to build AdjListGraph, node %luB.\n",
+         sizeof(AdjGraph::AdjListNode));
+#ifndef GEM_FORGE
+  Timer adjBuildTimer;
+  adjBuildTimer.Start();
+#endif // GEM_FORGE
+  AdjGraph adjGraph(num_threads, g.num_nodes(), g.out_neigh_index_offset(),
+                    g.out_edges(), parent.data());
+#ifndef GEM_FORGE
+  adjBuildTimer.Stop();
+  printf("AdjListGraph built %10.5lfs.\n", adjBuildTimer.Seconds());
+#else
+  printf("AdjListGraph built.\n");
+#endif // GEM_FORGE
+#endif // USE_ADJ_LIST
+
+#ifdef GEM_FORGE
+  m5_stream_nuca_remap();
+#endif // GEM_FORGE
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
 
   if (warm_cache > 0) {
     auto num_nodes = g.num_nodes();
-    auto num_edges = g.num_edges_directed();
+    NodeID *parent_data = parent.data();
+    gf_warm_array("parent", parent_data, num_nodes * sizeof(parent_data[0]));
+
+#ifdef USE_SPATIAL_QUEUE
+    gf_warm_array("squeue.data", squeue.data,
+                  squeue.num_queues * squeue.queue_capacity *
+                      sizeof(squeue.data[0]));
+#ifdef USE_SPATIAL_FRONTIER
+    gf_warm_array("squeue2.data", squeue2.data,
+                  squeue2.num_queues * squeue2.queue_capacity *
+                      sizeof(squeue2.data[0]));
+#endif
+#endif
+
+#ifdef USE_ADJ_LIST
+    gf_warm_array("adj_list", adjGraph.adjList,
+                  num_nodes * sizeof(adjGraph.adjList[0]));
+
+    if (warm_cache > 1) {
+      adjGraph.warmAdjList();
+    }
+
+#else
+
 #ifdef USE_EDGE_INDEX_OFFSET
     EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
 #else
     EdgeIndexT *out_neigh_index = g.out_neigh_index();
 #endif // USE_EDGE_INDEX_OFFSET
+
+    auto num_edges = g.num_edges_directed();
     NodeID *out_edges = g.out_edges();
-    NodeID *parent_data = parent.data();
     gf_warm_array("out_neigh_index", out_neigh_index,
                   num_nodes * sizeof(out_neigh_index[0]));
-    gf_warm_array("parent", parent_data, num_nodes * sizeof(parent_data[0]));
     if (warm_cache > 1) {
       gf_warm_array("out_edges", out_edges, num_edges * sizeof(out_edges[0]));
     }
+#endif
+
     std::cout << "Warm up done.\n";
   }
 
@@ -295,7 +215,16 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
 #endif
 
   uint64_t iter = 0;
+
+#ifdef USE_SPATIAL_FRONTIER
+
+  auto *frontier = &squeue2;
+  auto *next_frontier = &squeue;
+  while (!frontier->empty()) {
+
+#else
   while (!queue.empty()) {
+#endif
 
 #ifdef GEM_FORGE
     m5_work_begin(0, 0);
@@ -303,12 +232,35 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
 
     t.Start();
 
-#ifdef USE_SPATIAL_QUEUE
-    TDStep(g, parent, squeue, queue);
+    bfsPush(
+
+#ifdef USE_ADJ_LIST
+        adjGraph,
 #else
-    TDStep(g, parent, queue);
+        g,
 #endif
+
+        parent,
+
+#ifdef USE_SPATIAL_FRONTIER
+        *next_frontier, *frontier
+#elif defined(USE_SPATIAL_QUEUE)
+        squeue, queue
+#else
+      queue
+#endif
+    );
+
+#ifdef USE_SPATIAL_FRONTIER
+    // Swap two spatial queues.
+    {
+      auto *tmp = frontier;
+      frontier = next_frontier;
+      next_frontier = tmp;
+    }
+#else
     queue.slide_window();
+#endif
 
 #ifdef GEM_FORGE
     m5_work_end(0, 0);
@@ -316,9 +268,11 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
 
     t.Stop();
 
+#ifndef USE_SPATIAL_FRONTIER
 #ifndef GEM_FORGE
     printf("%6zu  td%11" PRId64 "  %10.5lfms %lu-%lu\n", iter, queue.size(),
            t.Millisecs(), queue.shared_out_start, queue.shared_in);
+#endif
 #endif
     // std::sort(queue.shared + queue.shared_out_start,
     //           queue.shared + queue.shared_out_end);
@@ -431,7 +385,8 @@ int main(int argc, char *argv[]) {
     int alpha = 15;
     int beta = 18;
     int warm_cache = cli.warm_cache();
-    return DOBFS(g, sp.PickNext(), alpha, beta, warm_cache);
+    int num_threads = cli.num_threads();
+    return DOBFS(g, sp.PickNext(), num_threads, alpha, beta, warm_cache);
   };
   SourcePicker<Graph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const Graph &g, const pvector<NodeID> &parent) {

@@ -167,24 +167,7 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
                   num_nodes * sizeof(adjGraph.adjList[0]));
 
     // Warm up the adjacent list.
-    {
-      printf("Start warming AdjList.\n");
-      auto adj_list = adjGraph.adjList;
-#pragma omp parallel for schedule(static) firstprivate(adj_list)
-      for (int64_t i = 0; i < num_nodes; i++) {
-
-        int64_t n = i;
-
-        auto *cur_node = adj_list[n];
-
-#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
-        while (cur_node) {
-          volatile auto next_node = cur_node->next;
-          cur_node = next_node;
-        }
-      }
-      printf("Warmed AdjList.\n");
-    }
+    adjGraph.warmAdjList();
 
 #else // Warm up CSR list.
     gf_warm_array("out_neigh_index", out_neigh_index,
