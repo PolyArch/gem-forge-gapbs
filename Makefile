@@ -1,6 +1,10 @@
 # See LICENSE.txt for license details.
 
-CXX_FLAGS += -std=c++11 -O3 -Wall
+AFFINITY_ALLOC_INC_PATH=${GEM_FORGE_TRANSFORM_PATH}/src/affinity_alloc
+AFFINITY_ALLOC_LIB_PATH=${GEM_FORGE_TRANSFORM_PATH}/build/src/affinity_alloc
+
+CXX_FLAGS += -std=c++11 -O3 -Wall -I${AFFINITY_ALLOC_INC_PATH}
+LINK_FLAGS += -L${AFFINITY_ALLOC_LIB_PATH} -lAffinityAlloc
 PAR_FLAG = -fopenmp
 
 ifneq (,$(findstring icpc,$(CXX)))
@@ -22,6 +26,7 @@ KERNELS += pr_pull_shuffle
 KERNELS += pr_push
 KERNELS += pr_push_adj_rnd
 KERNELS += pr_push_adj_lnr
+KERNELS += pr_push_adj_aff
 KERNELS += bfs_push
 KERNELS += bfs_push_adj_rnd_spatial
 KERNELS += bfs_push_adj_rnd_sf
@@ -59,7 +64,7 @@ SUITE = $(KERNELS) converter gscore bound_dfs nuca_analysis
 all: $(SUITE)
 
 % : src/%.cc src/*.h
-	$(CXX) $(CXX_FLAGS) $< -o $@
+	$(CXX) $(CXX_FLAGS) $< $(LINK_FLAGS) -o $@
 
 # Testing
 include test/test.mk

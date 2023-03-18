@@ -1,7 +1,12 @@
 #ifndef ADJ_LIST_GRAPH_H
 #define ADJ_LIST_GRAPH_H
 
+#ifdef USE_AFFINITY_ALLOCATOR
 #include "affinity_allocator.hh"
+#elif defined(USE_AFFINITY_ALLOC)
+#include "affinity_alloc.h"
+#endif
+
 #include "util.h"
 
 #include "omp.h"
@@ -27,9 +32,11 @@ public:
   AdjListNode **adjList = nullptr;
   int64_t *degrees = nullptr;
 
+#ifdef USE_AFFINITY_ALLOCATOR
   constexpr static int ArenaSize = 8192;
   using AllocatorT = MultiThreadAffinityAllocator<AdjListNode, ArenaSize>;
   AllocatorT *allocator = nullptr;
+#endif
 
   AdjListGraph(int threads, int64_t _N, NodeID_ *offsets, DestID_ *edges,
                void *properties)
@@ -90,16 +97,16 @@ public:
 /*****************************************************************
  * Register the region to SNUCA.
  *****************************************************************/
-#ifdef USE_AFFINITY_ALLOCATOR
 #ifdef GEM_FORGE
     {
-      auto dummyNode = reinterpret_cast<AdjListNode *>(0);
-      int arenaIdx = 0;
       m5_stream_nuca_region("gap.adj.ptr", adjList, sizeof(*adjList), N, 0, 0);
       m5_stream_nuca_region("gap.adj.degree", degrees, sizeof(*degrees), N, 0,
                             0);
       m5_stream_nuca_align(adjList, properties, 0);
       m5_stream_nuca_align(degrees, properties, 0);
+#ifdef USE_AFFINITY_ALLOCATOR
+      auto dummyNode = reinterpret_cast<AdjListNode *>(0);
+      int arenaIdx = 0;
       for (const auto &threadAlloc : this->allocator->allocators) {
         auto arena = threadAlloc.arenas;
         while (arena) {
@@ -117,8 +124,8 @@ public:
           arenaIdx++;
         }
       }
-    }
 #endif
+    }
 #endif
   }
 
@@ -131,7 +138,11 @@ public:
       auto node = adjList[i];
       while (node) {
         auto next = node->next;
+#ifdef USE_AFFINITY_ALLOC
+        free_aff(node);
+#else
         free(node);
+#endif
         node = next;
       }
     }
@@ -144,8 +155,12 @@ public:
 #ifdef USE_AFFINITY_ALLOCATOR
     return this->allocator->alloc(tid);
 #else
-    // In-place new.
+// In-place new.
+#ifdef USE_AFFINITY_ALLOC
+    auto *n = malloc_aff(sizeof(AdjListNode));
+#else
     auto *n = malloc(sizeof(AdjListNode));
+#endif
     auto *node = new (n) AdjListNode();
     return node;
 #endif
