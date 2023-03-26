@@ -149,4 +149,33 @@ __attribute__((noinline)) void pageRankPushAdjList(AdjGraph &graph,
   }
 }
 
+__attribute__((noinline)) ScoreT
+pageRankPushUpdate(NodeID num_nodes, ScoreT *scores, ScoreT *next_scores,
+                   ScoreT base_score, ScoreT kDamp) {
+
+  ScoreT error = 0;
+
+#pragma omp parallel for reduction(+ : error) schedule(static) \
+  firstprivate(num_nodes, scores, next_scores, base_score, kDamp)
+  for (NodeID n = 0; n < num_nodes; n++) {
+
+#pragma ss stream_name "gap.pr_push.update.score.ld"
+    ScoreT score = scores[n];
+
+#pragma ss stream_name "gap.pr_push.update.next.ld"
+    ScoreT next = next_scores[n];
+
+    ScoreT next_score = base_score + kDamp * next;
+    error += next_score > score ? (next_score - score) : (score - next_score);
+
+#pragma ss stream_name "gap.pr_push.update.score.st"
+    scores[n] = next_score;
+
+#pragma ss stream_name "gap.pr_push.update.next.st"
+    next_scores[n] = 0;
+  }
+
+  return error;
+}
+
 #endif

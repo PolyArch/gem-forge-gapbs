@@ -15,8 +15,8 @@
 #include "gem5/m5ops.h"
 #endif
 
-template <class NodeID_, class DestID_ = NodeID_, bool MakeInverse_ = true,
-          int EdgeOffset_ = 0, int EdgeSize_ = sizeof(DestID_)>
+template <class NodeID_, class DestID_ = NodeID_, int EdgeOffset_ = 0,
+          int EdgeSize_ = sizeof(DestID_)>
 class AdjListGraph {
 public:
   constexpr static int EdgesPerNode = sizeof(DestID_) == 8 ? 5 : 10;
@@ -179,7 +179,7 @@ public:
 #endif
   }
 
-  int64_t warmAdjList() {
+  __attribute__((noinline)) int64_t warmAdjList() {
     // Warm up the adjacent list.
     printf("Start warming AdjList.\n");
     auto adj_list = this->adjList;

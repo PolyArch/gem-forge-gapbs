@@ -44,42 +44,16 @@ using namespace std;
 pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
                              int warm_cache = 2, int num_threads = 1) {
   const auto num_nodes = g.num_nodes();
-  NodeID *out_edges = g.out_edges();
+  const auto __attribute__((unused)) num_edges = g.num_edges_directed();
+
   const ScoreT init_score = 1.0f / num_nodes;
   const ScoreT base_score = (1.0f - kDamp) / num_nodes;
 
-  const uint64_t page_bytes = 4096;
-  const uint64_t llc_wrap_bytes = 1024 * 1024;
-  const auto llc_wrap_pages = (llc_wrap_bytes + page_bytes - 1) / page_bytes;
-  auto scores_bytes = num_nodes * sizeof(ScoreT);
-  auto scores_pages = (scores_bytes + page_bytes - 1) / page_bytes;
-  /**
-   * We consider the extra meta data before the allocated area.
-   * One page for next_scores, we added to scores_pages.
-   * One page for gap array, we charge if gap_pages > 1.
-   */
-  scores_pages++;
-  auto scores_remain_pages = scores_pages % llc_wrap_pages;
-  auto offset_pages = (SCORES_OFFSET_BYTES + page_bytes - 1) / page_bytes;
-  auto gap_pages = llc_wrap_pages - scores_remain_pages + offset_pages;
-  printf("Pages: LLC %lu Score %lu Remain %lu Offset %lu Gap %lu.\n",
-         llc_wrap_pages, scores_pages, scores_remain_pages, offset_pages,
-         gap_pages);
+  pvector<ScoreT> scores0(num_nodes, init_score);
+  pvector<ScoreT> scores1(num_nodes, 0);
 
-  pvector<ScoreT> scores(num_nodes, init_score);
-  if (gap_pages > 0) {
-    auto gap_bytes = gap_pages * page_bytes;
-    if (gap_pages > 1) {
-      gap_bytes = (gap_pages - 1) * page_bytes;
-    } else {
-      gap_bytes = page_bytes / 2;
-    }
-    pvector<uint8_t> scores_gap(gap_bytes, 0);
-  }
-  pvector<ScoreT> next_scores(num_nodes, 0);
-
-  ScoreT *scores_data = scores.data();
-  ScoreT *next_scores_data = next_scores.data();
+  ScoreT *scores_data0 = scores0.data();
+  ScoreT *scores_data1 = scores1.data();
 
 #ifdef SHUFFLE_NODES
   // Shuffle the nodes.
@@ -98,33 +72,41 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
   NodeID *nodes_data = nodes.data();
 #endif
 
-#ifdef GEM_FORGE
-  m5_stream_nuca_region("gap.pr_push.score", scores_data, sizeof(ScoreT),
-                        num_nodes, 0, 0);
-  m5_stream_nuca_region("gap.pr_push.next_score", next_scores_data,
-                        sizeof(ScoreT), num_nodes, 0, 0);
-  m5_stream_nuca_set_property(next_scores_data,
-                              STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                              roundUpPow2(num_nodes / 64) * sizeof(ScoreT));
-  m5_stream_nuca_align(scores_data, next_scores_data, 0);
-#ifndef USE_ADJ_LIST
-  const auto num_edges = g.num_edges_directed();
+#ifdef USE_PUSH
+  auto *edges = g.out_edges();
+  auto *__attribute__((unused)) neigh_index_offset = g.out_neigh_index_offset();
+  auto *__attribute__((unused)) neigh_index_ptr = g.out_neigh_index();
+#else
+  auto *edges = g.in_edges();
+  auto *__attribute__((unused)) neigh_index_offset = g.in_neigh_index_offset();
+  auto *__attribute__((unused)) neigh_index_ptr = g.in_neigh_index();
+#endif
 
 #ifdef USE_EDGE_INDEX_OFFSET
-  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
+  auto *__attribute__((unused)) neigh_index = neigh_index_offset;
 #else
-  EdgeIndexT *out_neigh_index = g.out_neigh_index();
-#endif // USE_EDGE_INDEX_OFFSET
+  auto *__attribute__((unused)) neigh_index = neigh_index_ptr;
+#endif
 
-  m5_stream_nuca_region("gap.pr_push.out_neigh_index", out_neigh_index,
-                        sizeof(EdgeIndexT), num_nodes, 0, 0);
-  m5_stream_nuca_region("gap.pr_push.out_edge", out_edges, sizeof(NodeID),
-                        num_edges, 0, 0);
-  m5_stream_nuca_align(out_neigh_index, next_scores_data, 0);
-  m5_stream_nuca_align(out_edges, next_scores_data,
+#ifdef GEM_FORGE
+  m5_stream_nuca_region("gap.pr.score0", scores_data0, sizeof(ScoreT),
+                        num_nodes, 0, 0);
+  m5_stream_nuca_region("gap.pr.score1", scores_data1, sizeof(ScoreT),
+                        num_nodes, 0, 0);
+  m5_stream_nuca_set_property(scores_data1,
+                              STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                              roundUpPow2(num_nodes / 64) * sizeof(ScoreT));
+  m5_stream_nuca_align(scores_data0, scores_data1, 0);
+
+#ifndef USE_ADJ_LIST
+
+  m5_stream_nuca_region("gap.pr.neigh_index", neigh_index, sizeof(EdgeIndexT),
+                        num_nodes, 0, 0);
+  m5_stream_nuca_region("gap.pr.edge", edges, sizeof(NodeID), num_edges, 0, 0);
+  m5_stream_nuca_align(neigh_index, scores_data1, 0);
+  m5_stream_nuca_align(edges, scores_data1,
                        m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
-  m5_stream_nuca_align(out_edges, out_neigh_index,
-                       m5_stream_nuca_encode_csr_index());
+  m5_stream_nuca_align(edges, neigh_index, m5_stream_nuca_encode_csr_index());
 #endif
 
   // Do a remap first.
@@ -139,8 +121,8 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
   Timer adjBuildTimer;
   adjBuildTimer.Start();
 #endif // GEM_FORGE
-  AdjGraph adjGraph(num_threads, g.num_nodes(), g.out_neigh_index_offset(),
-                    out_edges, next_scores_data);
+  AdjGraph adjGraph(num_threads, num_nodes, neigh_index_offset, edges,
+                    scores_data1);
 #ifndef GEM_FORGE
   adjBuildTimer.Stop();
   printf("AdjListGraph built %10.5lfs.\n", adjBuildTimer.Seconds());
@@ -166,9 +148,8 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
 #ifdef SHUFFLE_NODES
     gf_warm_array("nodes", nodes_data, num_nodes * sizeof(nodes_data[0]));
 #endif
-    gf_warm_array("scores", scores_data, num_nodes * sizeof(scores_data[0]));
-    gf_warm_array("next_scores", next_scores_data,
-                  num_nodes * sizeof(next_scores_data[0]));
+    gf_warm_array("scores0", scores_data0, num_nodes * sizeof(scores_data0[0]));
+    gf_warm_array("scores1", scores_data1, num_nodes * sizeof(scores_data1[0]));
 
 #ifdef USE_ADJ_LIST
     gf_warm_array("degrees", adjGraph.degrees,
@@ -180,10 +161,10 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
     adjGraph.warmAdjList();
 
 #else // Warm up CSR list.
-    gf_warm_array("out_neigh_index", out_neigh_index,
-                  num_nodes * sizeof(out_neigh_index[0]));
+    gf_warm_array("neigh_index", neigh_index,
+                  num_nodes * sizeof(neigh_index[0]));
     if (warm_cache > 1) {
-      gf_warm_array("out_edges", out_edges, num_edges * sizeof(out_edges[0]));
+      gf_warm_array("edges", edges, num_edges * sizeof(edges[0]));
     }
 #endif
 
@@ -208,7 +189,7 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
 #ifdef SHUFFLE_NODES
                         nodes_data,
 #endif
-                        scores_data, next_scores_data);
+                        scores_data0, scores_data1);
 
 #else
 
@@ -216,7 +197,7 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
 #ifdef SHUFFLE_NODES
                     nodes_data,
 #endif
-                    scores_data, next_scores_data, out_neigh_index, out_edges);
+                    scores_data0, scores_data1, neigh_index, edges);
 
 #endif // USE_ADJ_LIST
 
@@ -229,35 +210,18 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
     // // Testing purpose.
     // for (NodeID n = 0; n < g.num_nodes(); n++) {
     //   printf(" - Iter %d-1 %d Score %f NextScore %f.\n", iter, n,
-    //          scores_data[n], next_scores_data[n]);
+    //          scores_data0[n], scores_data1[n]);
     // }
 
     float error = 0;
 #ifndef DISABLE_KERNEL2
-#pragma omp parallel for reduction(+ : error) schedule(static) \
-  firstprivate(scores_data, next_scores_data, base_score, kDamp)
-    for (NodeID n = 0; n < g.num_nodes(); n++) {
-
-#pragma ss stream_name "gap.pr_push.update.score.ld"
-      ScoreT score = scores_data[n];
-
-#pragma ss stream_name "gap.pr_push.update.next.ld"
-      ScoreT next = next_scores_data[n];
-
-      ScoreT next_score = base_score + kDamp * next;
-      error += next_score > score ? (next_score - score) : (score - next_score);
-
-#pragma ss stream_name "gap.pr_push.update.score.st"
-      scores_data[n] = next_score;
-
-#pragma ss stream_name "gap.pr_push.update.next.st"
-      next_scores_data[n] = 0;
-    }
+    error = pageRankPushUpdate(num_nodes, scores_data0, scores_data1,
+                               base_score, kDamp);
 #endif
     // // Testing purpose.
     // for (NodeID n = 0; n < g.num_nodes(); n++) {
     //   printf(" - Iter %d-2 %d Score %f NextScore %f.\n", iter, n,
-    //          scores_data[n], next_scores_data[n]);
+    //          scores_data[n], scores_data1[n]);
     // }
 
     printf(" %2d    %f\n", iter, error);
@@ -275,7 +239,7 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
   exit(0);
 #endif
 
-  return scores;
+  return scores0;
 }
 
 void PrintTopScores(const Graph &g, const pvector<ScoreT> &scores) {

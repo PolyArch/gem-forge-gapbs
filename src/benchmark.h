@@ -36,7 +36,7 @@ typedef CSRGraph<NodeID> Graph;
 typedef CSRGraph<NodeID, WNode> WGraph;
 
 typedef AdjListGraph<NodeID> AdjGraph;
-typedef AdjListGraph<NodeID, WNode, true, offsetof(WNode, v), sizeof(WNode::v)>
+typedef AdjListGraph<NodeID, WNode, offsetof(WNode, v), sizeof(WNode::v)>
     WAdjGraph;
 
 typedef BuilderBase<NodeID, NodeID, WeightT> Builder;
