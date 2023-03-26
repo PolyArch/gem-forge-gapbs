@@ -103,7 +103,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
                           num_nodes, 0, 0);
     m5_stream_nuca_set_property(parent_data,
                                 STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                                num_nodes_per_bank);
+                                num_nodes_per_bank * sizeof(NodeID));
 #ifndef USE_ADJ_LIST
     const auto num_edges = g.num_edges_directed();
 #ifdef USE_EDGE_INDEX_OFFSET
@@ -140,6 +140,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
     m5_stream_nuca_align(squeue2.meta, parent_data, num_nodes_per_bank);
 #endif
 #endif
+    m5_stream_nuca_remap();
   }
 #endif
 
@@ -160,9 +161,15 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 #endif // GEM_FORGE
 #endif // USE_ADJ_LIST
 
-#ifdef GEM_FORGE
-  m5_stream_nuca_remap();
-#endif // GEM_FORGE
+  {
+    omp_set_num_threads(num_threads);
+    float v;
+    float *pv = &v;
+#pragma omp parallel for schedule(static)
+    for (uint64_t i = 0; i < num_threads; ++i) {
+      __attribute__((unused)) volatile float v = *pv;
+    }
+  }
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
@@ -367,7 +374,8 @@ int main(int argc, char *argv[]) {
     return -1;
 
   if (cli.num_threads() != -1) {
-    omp_set_num_threads(cli.num_threads());
+    // Start with one thread.
+    omp_set_num_threads(1);
   }
 
   Builder b(cli);

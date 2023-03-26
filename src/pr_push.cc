@@ -105,7 +105,7 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
                         sizeof(ScoreT), num_nodes, 0, 0);
   m5_stream_nuca_set_property(next_scores_data,
                               STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                              roundUpPow2(num_nodes / 64));
+                              roundUpPow2(num_nodes / 64) * sizeof(ScoreT));
   m5_stream_nuca_align(scores_data, next_scores_data, 0);
 #ifndef USE_ADJ_LIST
   const auto num_edges = g.num_edges_directed();
@@ -126,6 +126,9 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
   m5_stream_nuca_align(out_edges, out_neigh_index,
                        m5_stream_nuca_encode_csr_index());
 #endif
+
+  // Do a remap first.
+  m5_stream_nuca_remap();
 #endif // GEM_FORGE
 
 #ifdef USE_ADJ_LIST
@@ -146,9 +149,16 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
 #endif // GEM_FORGE
 #endif // USE_ADJ_LIST
 
-#ifdef GEM_FORGE
-  m5_stream_nuca_remap();
-#endif // GEM_FORGE
+  // Start the threads.
+  {
+    omp_set_num_threads(num_threads);
+    float v;
+    float *pv = &v;
+#pragma omp parallel for schedule(static)
+    for (uint64_t i = 0; i < num_threads; ++i) {
+      __attribute__((unused)) volatile float v = *pv;
+    }
+  }
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
@@ -180,16 +190,6 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
     std::cout << "Warm up done.\n";
   }
 #endif // GEM_FORGE
-
-  // Start the threads.
-  {
-    float v;
-    float *pv = &v;
-#pragma omp parallel for schedule(static)
-    for (uint64_t i = 0; i < num_threads; ++i) {
-      __attribute__((unused)) volatile float v = *pv;
-    }
-  }
 
 #ifdef GEM_FORGE
   m5_reset_stats(0, 0);
@@ -317,7 +317,8 @@ int main(int argc, char *argv[]) {
 
   if (cli.num_threads() != -1) {
     printf("NumThreads = %d.\n", cli.num_threads());
-    omp_set_num_threads(cli.num_threads());
+    // It begins with 1 thread.
+    omp_set_num_threads(1);
   }
 
   Builder b(cli);

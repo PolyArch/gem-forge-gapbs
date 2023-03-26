@@ -288,8 +288,9 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
 
     m5_stream_nuca_region("gap.sssp.dist", dist_data, sizeof(WeightT),
                           num_nodes, 0, 0);
-    m5_stream_nuca_set_property(
-        dist_data, STREAM_NUCA_REGION_PROPERTY_INTERLEAVE, num_nodes_per_bank);
+    m5_stream_nuca_set_property(dist_data,
+                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                num_nodes_per_bank * sizeof(WeightT));
 
 #ifndef USE_ADJ_LIST
 
@@ -324,6 +325,7 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
 
 #endif // USE_SPATIAL_FRONTIER
 #endif // USE_SPATIAL_QUEUE
+    m5_stream_nuca_remap();
   }
 #endif // GEM_FORGE
 
@@ -344,9 +346,15 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
 #endif // GEM_FORGE
 #endif // USE_ADJ_LIST
 
-#ifdef GEM_FORGE
-  m5_stream_nuca_remap();
-#endif
+  {
+    omp_set_num_threads(num_threads);
+    float v;
+    float *pv = &v;
+#pragma omp parallel for schedule(static)
+    for (uint64_t i = 0; i < num_threads; ++i) {
+      __attribute__((unused)) volatile float v = *pv;
+    }
+  }
 
   t.Start();
 
@@ -714,7 +722,8 @@ int main(int argc, char *argv[]) {
 
   printf("Num threads %d Delta %d.\n", cli.num_threads(), kDelta);
   if (cli.num_threads() != -1) {
-    omp_set_num_threads(cli.num_threads());
+    // We always start with a single thread.
+    omp_set_num_threads(1);
   }
 
   WeightedBuilder b(cli);

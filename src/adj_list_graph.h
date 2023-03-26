@@ -38,8 +38,9 @@ public:
   AllocatorT *allocator = nullptr;
 #endif
 
+  template <typename P>
   AdjListGraph(int threads, int64_t _N, NodeID_ *offsets, DestID_ *edges,
-               void *properties)
+               const P *properties)
       : N(_N) {
 
 #ifdef USE_AFFINITY_ALLOCATOR
@@ -53,6 +54,8 @@ public:
 
     auto adjList = this->adjList;
     auto degrees = this->degrees;
+
+    const void *addrs[EdgesPerNode];
 
 #pragma omp parallel firstprivate(_N, offsets, edges, adjList, degrees)
     {
@@ -68,22 +71,31 @@ public:
           continue;
         }
 
-        adjList[i] = this->allocNode(tid);
-        allocNodes[tid]++;
+        AdjListNode *curNode = nullptr;
+        for (int64_t j = lhs; j < rhs; j += EdgesPerNode) {
 
-        auto *curNode = adjList[i];
-        for (int64_t j = lhs; j < rhs; ++j) {
-          if (curNode->numEdges == EdgesPerNode) {
-            // Allocate a new node.
-            auto *newNode = this->allocNode(tid);
-            allocNodes[tid]++;
-            curNode->next = newNode;
-            newNode->prev = curNode;
-            curNode = newNode;
+          auto numEdges = std::min(rhs - j, static_cast<int64_t>(EdgesPerNode));
+          for (int64_t k = 0; k < numEdges; ++k) {
+            // Calculate the address
+            addrs[k] = properties + edges[j + k];
           }
-          // Push the edge.
-          curNode->edges[curNode->numEdges] = edges[j];
-          curNode->numEdges++;
+
+          // Allocate a new node.
+          auto *newNode = this->allocNode(tid, numEdges, addrs);
+          allocNodes[tid]++;
+          newNode->prev = curNode;
+          if (curNode == nullptr) {
+            adjList[i] = newNode;
+          } else {
+            curNode->next = newNode;
+          }
+          curNode = newNode;
+
+          curNode->numEdges = numEdges;
+          for (int64_t k = 0; k < numEdges; ++k) {
+            // Push the edge.
+            curNode->edges[k] = edges[j + k];
+          }
         }
       }
     }
@@ -125,6 +137,7 @@ public:
         }
       }
 #endif
+      m5_stream_nuca_remap();
     }
 #endif
   }
@@ -151,13 +164,13 @@ public:
     free(degrees);
   }
 
-  AdjListNode *allocNode(int tid) {
+  AdjListNode *allocNode(int tid, int edges, const void **addrs) {
 #ifdef USE_AFFINITY_ALLOCATOR
     return this->allocator->alloc(tid);
 #else
 // In-place new.
 #ifdef USE_AFFINITY_ALLOC
-    auto *n = malloc_aff(sizeof(AdjListNode));
+    auto *n = malloc_aff(sizeof(AdjListNode), edges, addrs);
 #else
     auto *n = malloc(sizeof(AdjListNode));
 #endif
@@ -166,24 +179,30 @@ public:
 #endif
   }
 
-  void warmAdjList() {
+  int64_t warmAdjList() {
     // Warm up the adjacent list.
     printf("Start warming AdjList.\n");
     auto adj_list = this->adjList;
-#pragma omp parallel for schedule(static) firstprivate(adj_list)
+    int64_t edges = 0;
+#pragma omp parallel for schedule(static) firstprivate(adj_list) reduction(+:edges)
     for (int64_t i = 0; i < this->N; i++) {
 
-      int64_t n = i;
+      auto *cur_node = adj_list[i];
 
-      auto *cur_node = adj_list[n];
+      auto sum = 0;
 
 #pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
       while (cur_node) {
-        volatile auto next_node = cur_node->next;
+        auto next_node = cur_node->next;
+        auto num_edges = cur_node->numEdges;
+        sum += num_edges;
         cur_node = next_node;
       }
+
+      edges += sum;
     }
     printf("Warmed AdjList.\n");
+    return edges;
   }
 };
 

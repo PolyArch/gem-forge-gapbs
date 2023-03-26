@@ -1,7 +1,7 @@
 # See LICENSE.txt for license details.
 
-AFFINITY_ALLOC_INC_PATH=${GEM_FORGE_TRANSFORM_PATH}/src/affinity_alloc
-AFFINITY_ALLOC_LIB_PATH=${GEM_FORGE_TRANSFORM_PATH}/build/src/affinity_alloc
+AFFINITY_ALLOC_INC_PATH=${GEM_FORGE_TOP}/lib/affinity_alloc
+AFFINITY_ALLOC_LIB_PATH=${GEM_FORGE_TOP}/lib/affinity_alloc/build
 
 CXX_FLAGS += -std=c++11 -O3 -Wall -I${AFFINITY_ALLOC_INC_PATH}
 LINK_FLAGS += -L${AFFINITY_ALLOC_LIB_PATH} -lAffinityAlloc
