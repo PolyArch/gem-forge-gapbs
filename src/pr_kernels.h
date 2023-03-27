@@ -178,4 +178,99 @@ pageRankPushUpdate(NodeID num_nodes, ScoreT *scores, ScoreT *next_scores,
   return error;
 }
 
+__attribute__((noinline)) void pageRankPullUpdate(NodeID num_nodes,
+                                                  ScoreT *scores,
+                                                  ScoreT *out_contribs,
+                                                  EdgeIndexT *out_neigh_index) {
+
+#pragma omp parallel for schedule(static)                                      \
+    firstprivate(num_nodes, scores, out_contribs, out_neigh_index)
+  for (NodeID n = 0; n < num_nodes; n++) {
+
+    auto *out_neigh_ptr = out_neigh_index + n;
+
+#pragma ss stream_name "gap.pr_pull.update.score.ld"
+    ScoreT score = scores[n];
+
+#pragma ss stream_name "gap.pr_pull.update.out_begin.ld"
+    EdgeIndexT out_begin = out_neigh_ptr[0];
+
+#pragma ss stream_name "gap.pr_pull.update.out_end.ld"
+    EdgeIndexT out_end = out_neigh_ptr[1];
+
+    int64_t out_degree = out_end - out_begin;
+    ScoreT contrib = score / out_degree;
+
+#pragma ss stream_name "gap.pr_pull.update.out_contrib.st"
+    out_contribs[n] = contrib;
+  }
+}
+
+__attribute__((noinline)) ScoreT
+pageRankPullCSR(NodeID num_nodes,
+#ifdef SHUFFLE_NODES
+                NodeID *nodes,
+#endif
+                ScoreT *scores, ScoreT *out_contribs, ScoreT base_score,
+                ScoreT kDamp, EdgeIndexT *in_neigh_index, NodeID *in_edges) {
+
+  ScoreT error = 0;
+
+#ifdef SHUFFLE_NODES
+#pragma omp parallel for schedule(static) reduction(+ : error) \
+    firstprivate(num_nodes, nodes, scores, out_contribs, in_neigh_index, in_edges, base_score, kDamp)
+  for (NodeID i = 0; i < num_nodes; i++) {
+
+    NodeID u = nodes[i];
+
+#else
+
+#pragma omp parallel for schedule(static) reduction(+ : error) \
+    firstprivate(num_nodes, scores, out_contribs, in_neigh_index, in_edges, base_score, kDamp)
+  for (NodeID u = 0; u < num_nodes; u++) {
+
+#endif
+
+    auto *in_neigh_ptr = in_neigh_index + u;
+
+#pragma ss stream_name "gap.pr_pull.rdc.in_begin.ld"
+    EdgeIndexT in_begin = in_neigh_ptr[0];
+
+#pragma ss stream_name "gap.pr_pull.rdc.in_end.ld"
+    EdgeIndexT in_end = in_neigh_ptr[1];
+
+    int64_t in_degree = in_end - in_begin;
+
+#ifdef USE_EDGE_INDEX_OFFSET
+    NodeID *in_ptr = in_edges + in_begin;
+#else
+    NodeID *in_ptr = in_begin;
+#endif
+
+    ScoreT incoming_total = 0;
+    for (int64_t j = 0; j < in_degree; ++j) {
+
+#pragma ss stream_name "gap.pr_pull.rdc.v.ld"
+      NodeID v = in_ptr[j];
+
+#pragma ss stream_name "gap.pr_pull.rdc.contrib.ld"
+      ScoreT contrib = out_contribs[v];
+
+      incoming_total += contrib;
+    }
+
+#pragma ss stream_name "gap.pr_pull.rdc.score.ld"
+    ScoreT score = scores[u];
+
+    ScoreT new_score = base_score + kDamp * incoming_total;
+
+    error += new_score > score ? (new_score - score) : (score - new_score);
+
+#pragma ss stream_name "gap.pr_pull.rdc.score.st"
+    scores[u] = new_score;
+  }
+
+  return error;
+}
+
 #endif
