@@ -217,7 +217,7 @@ pageRankPullCSR(NodeID num_nodes,
   ScoreT error = 0;
 
 #ifdef SHUFFLE_NODES
-#pragma omp parallel for schedule(static) reduction(+ : error) \
+#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+ : error) \
     firstprivate(num_nodes, nodes, scores, out_contribs, in_neigh_index, in_edges, base_score, kDamp)
   for (NodeID i = 0; i < num_nodes; i++) {
 
@@ -225,7 +225,7 @@ pageRankPullCSR(NodeID num_nodes,
 
 #else
 
-#pragma omp parallel for schedule(static) reduction(+ : error) \
+#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+ : error) \
     firstprivate(num_nodes, scores, out_contribs, in_neigh_index, in_edges, base_score, kDamp)
   for (NodeID u = 0; u < num_nodes; u++) {
 
@@ -268,6 +268,93 @@ pageRankPullCSR(NodeID num_nodes,
 
 #pragma ss stream_name "gap.pr_pull.rdc.score.st"
     scores[u] = new_score;
+  }
+
+  return error;
+}
+
+__attribute__((noinline)) ScoreT pageRankPullAdjList(AdjGraph &graph,
+#ifdef SHUFFLE_NODES
+                                                     NodeID *nodes,
+#endif
+                                                     ScoreT *scores,
+                                                     ScoreT *out_contribs,
+                                                     ScoreT base_score,
+                                                     ScoreT kDamp) {
+
+  auto num_nodes = graph.N;
+  auto adj_list = graph.adjList;
+
+  ScoreT error = 0;
+
+#ifdef SHUFFLE_NODES
+
+#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+:error) firstprivate(                       \
+    scores, out_contribs, nodes, num_nodes, adj_list, base_score, kDamp)
+  for (int64_t i = 0; i < num_nodes; i++) {
+
+#pragma ss stream_name "gap.pr_pull.rdc.node.ld"
+    NodeID n = nodes[i];
+
+#else
+
+#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+:error) firstprivate(                       \
+    scores, out_contribs, num_nodes, adj_list, base_score, kDamp)
+  for (int64_t i = 0; i < num_nodes; i++) {
+
+    int64_t n = i;
+
+#endif // SHUFFLE_NODES
+
+#pragma ss stream_name "gap.pr_pull.rdc.head.ld"
+    auto *cur_node = adj_list[n];
+
+    ScoreT income_total = 0;
+
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+    while (cur_node) {
+
+#pragma ss stream_name "gap.pr_pull.rdc.n_edges.ld"
+      const auto numEdges = cur_node->numEdges;
+
+      ScoreT income = 0;
+
+      /**
+       * It is guaranteed that numEdges > 0. And we need to write this as
+       * a do while loop so that income_total always get the value of income.
+       */
+      int64_t j = 0;
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+      do {
+
+#pragma ss stream_name "gap.pr_pull.rdc.v.ld"
+        NodeID v = cur_node->edges[j];
+
+#pragma ss stream_name "gap.pr_pull.rdc.contrib.ld"
+        ScoreT contrib = out_contribs[v];
+
+        income += contrib;
+
+        ++j;
+      } while (j < numEdges);
+
+#pragma ss stream_name "gap.pr_pull.rdc.next_node.ld"
+      auto next_node = cur_node->next;
+
+      income_total += income;
+
+      cur_node = next_node;
+    }
+
+#pragma ss stream_name "gap.pr_pull.rdc.score.ld"
+    ScoreT score = scores[n];
+
+    ScoreT new_score = base_score + kDamp * income_total;
+
+    error += new_score > score ? (new_score - score) : (score - new_score);
+
+#pragma ss stream_name "gap.pr_pull.rdc.score.st"
+    scores[n] = new_score;
   }
 
   return error;

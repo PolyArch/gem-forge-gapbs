@@ -282,7 +282,15 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
                                base_score, kDamp);
 #else
 #ifdef USE_ADJ_LIST
-#error "PULL ADJ List"
+    /*********************************************************************
+     * Pull adj list.
+     ********************************************************************/
+    error = pageRankPullAdjList(adjGraph,
+#ifdef SHUFFLE_NODES
+                                nodes_data,
+#endif
+                                scores_data0, scores_data1, base_score, kDamp);
+
 #else
     /*********************************************************************
      * Pull CSR.
