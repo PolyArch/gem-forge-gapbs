@@ -289,4 +289,90 @@ __attribute__((noinline)) void bfsPush(
   return;
 }
 
+// Sanity check that pull has no queue.
+#if defined(USE_PULL) || !defined(USE_PUSH)
+#ifdef USE_SPATIAL_QUEUE
+#error "BFS pull no spatial queue."
+#endif
+#ifdef USE_SPATIAL_FRONTIER
+#error "BFS pull no spatial queue."
+#endif
+#endif
+
+__attribute__((noinline)) int64_t bfsPullCSR(const Graph &g, NodeID *parent,
+                                             NodeID *next_parent) {
+
+  NodeID *in_edges = g.in_edges();
+#ifdef USE_EDGE_INDEX_OFFSET
+  EdgeIndexT *in_neigh_index = g.in_neigh_index_offset();
+#else
+  EdgeIndexT *in_neigh_index = g.in_neigh_index();
+#endif
+
+  int64_t awake_count = 0;
+
+#pragma omp parallel for schedule(static) reduction(+ : awake_count) \
+  firstprivate(in_edges, in_neigh_index, parent, next_parent)
+  for (NodeID u = 0; u < g.num_nodes(); u++) {
+
+#pragma ss stream_name "gap.bfs_pull.parent.ld"
+    NodeID p = parent[u];
+
+    // Explicit write this to avoid u + 1 and misplaced stream_step.
+    auto *in_neigh_ptr = in_neigh_index + u;
+
+#pragma ss stream_name "gap.bfs_pull.in_begin.ld"
+    auto in_begin = in_neigh_ptr[0];
+
+#pragma ss stream_name "gap.bfs_pull.in_end.ld"
+    auto in_end = in_neigh_ptr[1];
+
+    int64_t in_degree = in_end - in_begin;
+
+#ifdef USE_EDGE_INDEX_OFFSET
+    NodeID *in_ptr = in_edges + in_begin;
+#else
+    NodeID *in_ptr = in_begin;
+#endif
+
+    // This helps nest the inner loop.
+    auto needProcess = p < 0 && in_degree > 0;
+    if (needProcess) {
+
+      // Better to reduce from zero.
+      NodeID np = 0;
+      int64_t i = 0;
+      do {
+
+#pragma ss stream_name "gap.bfs_pull.v.ld"
+        NodeID v = in_ptr[i];
+
+#pragma ss stream_name "gap.bfs_pull.v_parent.ld"
+        NodeID v_parent = parent[v];
+
+        np = (v_parent > -1) ? (v + 1) : np;
+
+        i++;
+      } while (i != in_degree);
+
+      if (np != 0) {
+        next_parent[u] = np - 1;
+        awake_count++;
+      }
+    }
+  }
+
+  return awake_count;
+}
+
+__attribute__((noinline)) void bfsPullUpdate(NodeID num_nodes, NodeID *parent,
+                                             NodeID *next_parent) {
+
+// Copy next_parent into parent.
+#pragma omp parallel for schedule(static) firstprivate(parent, next_parent)
+  for (NodeID u = 0; u < num_nodes; u++) {
+    parent[u] = next_parent[u];
+  }
+}
+
 #endif
