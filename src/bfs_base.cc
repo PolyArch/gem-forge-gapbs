@@ -97,17 +97,19 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
   queue.slide_window();
 #endif
 
-  const auto num_edges = g.num_edges_directed();
+  const auto __attribute__((unused)) num_edges = g.num_edges_directed();
 #ifdef USE_EDGE_INDEX_OFFSET
-  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
-  EdgeIndexT *in_neigh_index = g.in_neigh_index_offset();
+  EdgeIndexT *__attribute__((unused)) out_neigh_index =
+      g.out_neigh_index_offset();
+  EdgeIndexT *__attribute__((unused)) in_neigh_index =
+      g.in_neigh_index_offset();
 #else
-  EdgeIndexT *out_neigh_index = g.out_neigh_index();
-  EdgeIndexT *in_neigh_index = g.in_neigh_index();
+  EdgeIndexT *__attribute__((unused)) out_neigh_index = g.out_neigh_index();
+  EdgeIndexT *__attribute__((unused)) in_neigh_index = g.in_neigh_index();
 #endif // USE_EDGE_INDEX_OFFSET
 
-  NodeID *out_edges = g.out_edges();
-  NodeID *in_edges = g.in_edges();
+  NodeID *__attribute__((unused)) out_edges = g.out_edges();
+  NodeID *__attribute__((unused)) in_edges = g.in_edges();
 
 #ifdef GEM_FORGE
   {
@@ -323,7 +325,11 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 
 #else
 
+#ifdef USE_ADJ_LIST
+    awake_count = bfsPullAdjList(adjGraph, parent.data(), next_parent.data());
+#else
     awake_count = bfsPullCSR(g, parent.data(), next_parent.data());
+#endif
     bfsPullUpdate(g.num_nodes(), parent.data(), next_parent.data());
 
 #endif

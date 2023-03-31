@@ -92,6 +92,7 @@ __attribute__((noinline)) void bfsPush(
 #endif
 
 #ifdef USE_ADJ_LIST
+  auto num_nodes = graph.N;
   auto adj_list = graph.adjList;
 
   PushPrivObj
@@ -99,6 +100,7 @@ __attribute__((noinline)) void bfsPush(
 #define PRIV_OBJ_LIST PopPrivObj PRIV_OBJ_LIST, adj_list
       ;
 #else
+  auto num_nodes = g.num_nodes();
   NodeID *out_edges = g.out_edges();
 #ifdef USE_EDGE_INDEX_OFFSET
   EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
@@ -134,7 +136,7 @@ __attribute__((noinline)) void bfsPush(
   {
 
 #ifndef USE_SPATIAL_QUEUE
-    SizedArray<NodeID> lqueue(g.num_nodes());
+    SizedArray<NodeID> lqueue(num_nodes);
 #endif
 
     /**************************************************************************
@@ -174,10 +176,10 @@ __attribute__((noinline)) void bfsPush(
         while (cur_node) {
 
 #pragma ss stream_name "gap.bfs_push.adj.n_edges.ld"
-          const auto numEdges = cur_node->numEdges;
+          const auto num_edges = cur_node->numEdges;
 
 #pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
-          for (int64_t j = 0; j < numEdges; ++j) {
+          for (int64_t j = 0; j < num_edges; ++j) {
 
 #pragma ss stream_name "gap.bfs_push.out_v.ld"
             NodeID v = cur_node->edges[j];
@@ -373,6 +375,69 @@ __attribute__((noinline)) void bfsPullUpdate(NodeID num_nodes, NodeID *parent,
   for (NodeID u = 0; u < num_nodes; u++) {
     parent[u] = next_parent[u];
   }
+}
+
+__attribute__((noinline)) int64_t
+bfsPullAdjList(const AdjGraph &g, NodeID *parent, NodeID *next_parent) {
+
+  auto num_nodes = g.N;
+  auto adj_list = g.adjList;
+
+  int64_t awake_count = 0;
+
+#pragma omp parallel for schedule(static) reduction(+ : awake_count) \
+  firstprivate(adj_list, parent, next_parent)
+  for (NodeID u = 0; u < num_nodes; u++) {
+
+#pragma ss stream_name "gap.bfs_pull.parent.ld"
+    NodeID p = parent[u];
+
+#pragma ss stream_name "gap.bfs_pull.head.ld"
+    auto *cur_node = adj_list[u];
+
+    // This helps nest the inner loop.
+    auto needProcess = p < 0 && cur_node != nullptr;
+    if (needProcess) {
+
+      // Better to reduce from zero.
+      NodeID np = 0;
+      do {
+
+#pragma ss stream_name "gap.bfs_pull.n_edges.ld"
+        const auto num_edges = cur_node->numEdges;
+
+        int64_t i = 0;
+        NodeID local_np = 0;
+        do {
+
+#pragma ss stream_name "gap.bfs_pull.v.ld"
+          NodeID v = cur_node->edges[i];
+
+#pragma ss stream_name "gap.bfs_pull.v_parent.ld"
+          NodeID v_parent = parent[v];
+
+          local_np = (v_parent > -1) ? (v + 1) : local_np;
+
+          i++;
+        } while (i < num_edges);
+
+#pragma ss stream_name "gap.bfs_pull.next_node.ld"
+        auto next_node = cur_node->next;
+
+        np = (local_np != 0) ? local_np : np;
+
+        cur_node = next_node;
+
+      } while (cur_node);
+
+      if (np != 0) {
+        next_parent[u] = np - 1;
+        awake_count++;
+      }
+    }
+  }
+
+  return awake_count;
 }
 
 #endif
