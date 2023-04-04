@@ -344,7 +344,7 @@ __attribute__((noinline)) int64_t bfsPullCSR(const Graph &g, NodeID *parent,
       // Better to reduce from zero.
       NodeID np = 0;
       int64_t i = 0;
-      do {
+      while (true) {
 
 #pragma ss stream_name "gap.bfs_pull.v.ld"
         NodeID v = in_ptr[i];
@@ -355,7 +355,16 @@ __attribute__((noinline)) int64_t bfsPullCSR(const Graph &g, NodeID *parent,
         np = (v_parent > -1) ? (v + 1) : np;
 
         i++;
-      } while (i != in_degree);
+
+#ifdef NO_EARLY_BREAK
+        bool broken = i == in_degree;
+#else
+        bool broken = i == in_degree || v_parent != InitParentId;
+#endif
+        if (broken) {
+          break;
+        }
+      }
 
       if (np != 0) {
         next_parent[u] = np - 1;
@@ -401,7 +410,7 @@ bfsPullAdjList(const AdjGraph &g, NodeID *parent, NodeID *next_parent) {
 
       // Better to reduce from zero.
       NodeID np = 0;
-      do {
+      while (true) {
 
 #pragma ss stream_name "gap.bfs_pull.n_edges.ld"
         const auto num_edges = cur_node->numEdges;
@@ -416,9 +425,17 @@ bfsPullAdjList(const AdjGraph &g, NodeID *parent, NodeID *next_parent) {
 #pragma ss stream_name "gap.bfs_pull.v_parent.ld"
           NodeID v_parent = parent[v];
 
-          local_np = (v_parent > -1) ? (v + 1) : local_np;
+          local_np = (v_parent > InitParentId) ? (v + 1) : local_np;
 
           i++;
+
+          /**
+           * Do not break not in this loop level, as num_edges is very small.
+           * LoopBound will actually cause the stream trying to do more work
+           * as it goes beyond num_edges.
+           * Ideally the LoopBound in stream should be enhanced with an upper
+           * bound, i.e. num_edges here.
+           */
         } while (i < num_edges);
 
 #pragma ss stream_name "gap.bfs_pull.next_node.ld"
@@ -428,7 +445,15 @@ bfsPullAdjList(const AdjGraph &g, NodeID *parent, NodeID *next_parent) {
 
         cur_node = next_node;
 
-      } while (cur_node);
+#ifdef NO_EARLY_BREAK
+        bool broken = cur_node == nullptr;
+#else
+        bool broken = cur_node == nullptr || local_np > 0;
+#endif
+        if (broken) {
+          break;
+        }
+      }
 
       if (np != 0) {
         next_parent[u] = np - 1;
