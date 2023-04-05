@@ -349,13 +349,6 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 #endif
 #endif
 
-    // std::sort(queue.shared + queue.shared_out_start,
-    //           queue.shared + queue.shared_out_end);
-    // for (int i = queue.shared_out_start; i < queue.shared_out_end; i += 5) {
-    //   printf("%d +5 %d %d %d %d %d.\n", i, queue.shared[i + 0],
-    //          queue.shared[i + 1], queue.shared[i + 2], queue.shared[i + 3],
-    //          queue.shared[i + 4]);
-    // }
     iter++;
   }
 
