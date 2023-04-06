@@ -2,9 +2,11 @@ import metis
 import sys
 import math
 import os
+import argparse
 
 def read_edge_list_as_adjlist(fn):
     adjlist = list()
+    edge_properties = list()
     min_vertex = -1
     with open(fn) as f:
         for line in f:
@@ -13,6 +15,9 @@ def read_edge_list_as_adjlist(fn):
             fields = line.split()
             src = int(fields[0])
             dst = int(fields[1])
+            if len(fields) > 2:
+                # Some edge properties, usually weight.
+                edge_properties.append((src, dst, ' '.join(fields[2:])))
             if min_vertex == -1:
                 min_vertex = min(src, dst)
             else:
@@ -30,7 +35,17 @@ def read_edge_list_as_adjlist(fn):
         for i in range(len(adjlist)):
             for j in range(len(adjlist[i])):
                 adjlist[i][j] -= min_vertex
-    return adjlist
+    
+    # Construct the edge property map and also subtract min_vertex.
+    edge_property_map = dict()
+    for src, dst, prop in edge_properties:
+        u = src - min_vertex if min_vertex > 0 else src
+        v = dst - min_vertex if min_vertex > 0 else dst
+        if u not in edge_property_map:
+            edge_property_map[u] = dict()
+        edge_property_map[u][v] = prop
+
+    return (adjlist, edge_property_map)
 
 def get_partition_list(parts):
     part_sets = list()
@@ -64,21 +79,31 @@ def analyze_partition(adjlist, edge_cuts, parts):
     Analyze each partition.
     """
     total_internal_nodes = 0
+    total_edges = 0
+    total_internal_edges = 0
     for pid in range(num_parts):
         part = part_sets[pid]
         internal_nodes = 0
+        internal_edges = 0
+        edges = 0
         for v in part:
             v_pid = parts[v]
-            externl_edges = 0
+            external_edges = 0
             for u in adjlist[v]:
+                edges += 1
                 u_pid = parts[u]
                 if u_pid != v_pid:
-                    externl_edges += 1
-            if externl_edges == 0:
+                    external_edges += 1
+                else:
+                    internal_edges += 1
+            if external_edges == 0:
                 internal_nodes += 1
         total_internal_nodes += internal_nodes
-        print(f'  Part {pid} Nodes {len(part)} InternalNodes {internal_nodes}')
+        total_internal_edges += internal_edges
+        total_edges += edges
+        print(f'  Part {pid} Nodes {len(part)} InternalNodes {internal_nodes} TotalEdges {edges} InternalEdges {internal_edges}')
     print(f'TotalInterlNodes {total_internal_nodes} Ratio {total_internal_nodes / len(adjlist)}')
+    print(f'TotalInterlEdges {total_internal_edges} TotalEdges {total_edges} Ratio {total_internal_edges / total_edges}')
 
 def dump_adjlist(adjlist, prefix, symmetry):
     el_fn = f'{prefix}.el'
@@ -93,7 +118,7 @@ def dump_adjlist(adjlist, prefix, symmetry):
         os.system(f'./converter -f {el_fn} -b {prefix}')
         os.system(f'./converter -f {el_fn} -b {prefix} -w')
 
-def dump_partition(original_fn, n_parts, adjlist, parts):
+def dump_partition(original_fn, n_parts, adjlist, parts, is_weight, edge_property_map):
 
     partitions = get_partition_list(parts)
     partition_acc = [0] * len(partitions)
@@ -107,17 +132,29 @@ def dump_partition(original_fn, n_parts, adjlist, parts):
         reorder_map[v] = reordered_v
 
     reordered_edge_list = list()
+    reordered_edge_properties = list()
     for u in range(len(adjlist)):
         reordered_u = reorder_map[u]
         for v in adjlist[u]:
             reordered_v = reorder_map[v]
             reordered_edge_list.append((reordered_u, reordered_v))
+            if edge_property_map:
+                reordered_edge_properties.append(edge_property_map[u][v])
 
+    prefix = original_fn[:original_fn.rfind('.')]
     fn = f'{prefix}-metis{n_parts}'
-    el_fn = f'{prefix}-metis{n_parts}.el'
+    if is_weight:
+        el_fn = f'{prefix}-metis{n_parts}.wel'
+    else:
+        el_fn = f'{prefix}-metis{n_parts}.el'
     with open(el_fn, 'w') as f:
-        for reordered_u, reordered_v in reordered_edge_list:
-            f.write(f'{reordered_u} {reordered_v}\n')
+        if reordered_edge_properties:
+            assert(len(reordered_edge_properties) == len(reordered_edge_list))
+            for (reordered_u, reordered_v), reordered_prop in zip(reordered_edge_list, reordered_edge_properties):
+                f.write(f'{reordered_u} {reordered_v} {reordered_prop}\n')
+        else:
+            for reordered_u, reordered_v in reordered_edge_list:
+                f.write(f'{reordered_u} {reordered_v}\n')
 
     original_src_fn = f'{prefix}.src.txt'
     try:
@@ -132,7 +169,10 @@ def dump_partition(original_fn, n_parts, adjlist, parts):
     reordered_src = reorder_map[src]
 
     # Generate the serialized undirected version, with the same source.
-    os.system(f'./converter -f {el_fn} -b {fn} -r {reordered_src}')
+    if is_weight:
+        os.system(f'./converter -f {el_fn} -b {fn} -r {reordered_src} -s -w')
+    else:
+        os.system(f'./converter -f {el_fn} -b {fn} -r {reordered_src} -s')
 
 def bounded_dfs(adjlist, bounded_depth):
     unclustered_nodes = set()
@@ -179,22 +219,33 @@ def bounded_dfs(adjlist, bounded_depth):
 
 
 def main(argv):
-    fn = argv[1]
-    nparts = int(argv[2])
-    symmetry = False
-    if len(argv) > 3:
-        if argv[3] == '-s':
-            symmetry = True
-    adjlist = read_edge_list_as_adjlist(fn)
+
+    parser = argparse.ArgumentParser(
+        prog = 'Partition Graph')
+
+    parser.add_argument('fn')           # file name for graph.
+    parser.add_argument('--nparts',
+        type=int, default=64,
+        help='Number of partition')     
+    parser.add_argument('--symmetric',
+        action='store_true', default=False,
+        help='Symetric')      
+    parser.add_argument('--out-fn', '-o',
+        type=str, default="float-trace.csv",
+        help='Output filename')    
+
+    args = parser.parse_args(argv)
+    is_weight = args.fn.endswith('.wel')
+    adjlist, edge_property_map = read_edge_list_as_adjlist(args.fn)
     # First dump the original version and pick up a source.
-    prefix = fn[:fn.rfind('.')]
+    prefix = args.fn[:args.fn.rfind('.')]
     # dump_adjlist(adjlist, prefix, symmetry)
 
-    # edge_cuts, parts = metis.part_graph(adjlist, nparts)
-    edge_cuts, parts = bounded_dfs(adjlist, nparts)
+    edge_cuts, parts = metis.part_graph(adjlist, args.nparts)
+    # edge_cuts, parts = bounded_dfs(adjlist, nparts)
     analyze_partition(adjlist, edge_cuts, parts)
-    # dump_partition(fn, nparts, adjlist, parts)
+    dump_partition(args.fn, args.nparts, adjlist, parts, is_weight, edge_property_map)
 
 
 if __name__ == '__main__':
-    main(sys.argv)
+    main(sys.argv[1:])
