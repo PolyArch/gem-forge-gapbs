@@ -8,6 +8,7 @@ def read_edge_list_as_adjlist(fn):
     adjlist = list()
     edge_properties = list()
     min_vertex = -1
+    max_vertex = 0
     with open(fn) as f:
         for line in f:
             if line.startswith('#') or line.startswith('%'):
@@ -22,9 +23,11 @@ def read_edge_list_as_adjlist(fn):
                 min_vertex = min(src, dst)
             else:
                 min_vertex = min(min_vertex, src, dst)
+            max_vertex = max(max_vertex, src, dst)
             while len(adjlist) <= src:
                 adjlist.append(list())
             adjlist[src].append(dst)
+    print(f'min = {min_vertex} max = {max_vertex} {len(adjlist)}')
     if min_vertex > 0:
         print(f'Subtract minimum vertex {min_vertex} from edge list.')
         for i in range(min_vertex):
@@ -60,8 +63,8 @@ def analyze_partition(adjlist, edge_cuts, parts):
     """
     Print out number of edges across partitions.
     """
-    num_edges = sum([sum(x) for x in adjlist]) / 2
-    print(f'EdgeCut {edge_cuts} TotalEdges {num_edges}')
+    num_edges = sum([len(x) for x in adjlist])
+    print(f'EdgeCut {edge_cuts} TotalDirEdges {num_edges}')
     """
     Analyze each average parition size and variation.
     """
@@ -118,7 +121,11 @@ def dump_adjlist(adjlist, prefix, symmetry):
         os.system(f'./converter -f {el_fn} -b {prefix}')
         os.system(f'./converter -f {el_fn} -b {prefix} -w')
 
-def dump_partition(original_fn, n_parts, adjlist, parts, is_weight, edge_property_map):
+def dump_partition(original_fn, n_parts, adjlist,
+    parts,
+    is_weight,
+    is_symmetry,
+    edge_property_map):
 
     partitions = get_partition_list(parts)
     partition_acc = [0] * len(partitions)
@@ -169,10 +176,12 @@ def dump_partition(original_fn, n_parts, adjlist, parts, is_weight, edge_propert
     reordered_src = reorder_map[src]
 
     # Generate the serialized undirected version, with the same source.
+    cmd = f'./converter -f {el_fn} -b {fn} -r {reordered_src}'
     if is_weight:
-        os.system(f'./converter -f {el_fn} -b {fn} -r {reordered_src} -s -w')
-    else:
-        os.system(f'./converter -f {el_fn} -b {fn} -r {reordered_src} -s')
+        cmd += ' -w'
+    if is_symmetry:
+        cmd += ' -s'
+    os.system(cmd)
 
 def bounded_dfs(adjlist, bounded_depth):
     unclustered_nodes = set()
@@ -241,10 +250,16 @@ def main(argv):
     prefix = args.fn[:args.fn.rfind('.')]
     # dump_adjlist(adjlist, prefix, symmetry)
 
+    print('Begin partition')
     edge_cuts, parts = metis.part_graph(adjlist, args.nparts)
+    print('End partition')
     # edge_cuts, parts = bounded_dfs(adjlist, nparts)
     analyze_partition(adjlist, edge_cuts, parts)
-    dump_partition(args.fn, args.nparts, adjlist, parts, is_weight, edge_property_map)
+    dump_partition(args.fn, args.nparts, adjlist,
+        parts,
+        is_weight,
+        args.symmetric,
+        edge_property_map)
 
 
 if __name__ == '__main__':
