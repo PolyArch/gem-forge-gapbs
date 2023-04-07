@@ -48,7 +48,7 @@ def read_edge_list_as_adjlist(fn):
             edge_property_map[u] = dict()
         edge_property_map[u][v] = prop
 
-    return (adjlist, edge_property_map)
+    return (adjlist, min_vertex, edge_property_map)
 
 def get_partition_list(parts):
     part_sets = list()
@@ -125,9 +125,12 @@ def dump_partition(original_fn, n_parts, adjlist,
     parts,
     is_weight,
     is_symmetry,
-    edge_property_map):
+    edge_property_map,
+    min_vertex,
+    ):
 
     partitions = get_partition_list(parts)
+    # Reordered graph nodes starts with 1.
     partition_acc = [0] * len(partitions)
     for i in range(1, len(partitions)):
         partition_acc[i] = partition_acc[i - 1] + len(partitions[i - 1])
@@ -143,6 +146,8 @@ def dump_partition(original_fn, n_parts, adjlist,
     for u in range(len(adjlist)):
         reordered_u = reorder_map[u]
         for v in adjlist[u]:
+            if u == 85195:
+                print(f'({u}, {v})')
             reordered_v = reorder_map[v]
             reordered_edge_list.append((reordered_u, reordered_v))
             if edge_property_map:
@@ -172,8 +177,13 @@ def dump_partition(original_fn, n_parts, adjlist,
     else:
         with f:
             src = int(next(f))
+
+    if min_vertex > 0:
+        print(f'Subtract {min_vertex} from Src {src}')
+        src = src - min_vertex
     
     reordered_src = reorder_map[src]
+    print(f'Source {src} Reordered {reordered_src}')
 
     # Generate the serialized undirected version, with the same source.
     cmd = f'./converter -f {el_fn} -b {fn} -r {reordered_src}'
@@ -245,7 +255,7 @@ def main(argv):
 
     args = parser.parse_args(argv)
     is_weight = args.fn.endswith('.wel')
-    adjlist, edge_property_map = read_edge_list_as_adjlist(args.fn)
+    adjlist, min_vertex, edge_property_map = read_edge_list_as_adjlist(args.fn)
     # First dump the original version and pick up a source.
     prefix = args.fn[:args.fn.rfind('.')]
     # dump_adjlist(adjlist, prefix, symmetry)
@@ -255,11 +265,15 @@ def main(argv):
     print('End partition')
     # edge_cuts, parts = bounded_dfs(adjlist, nparts)
     analyze_partition(adjlist, edge_cuts, parts)
-    dump_partition(args.fn, args.nparts, adjlist,
+    dump_partition(args.fn,
+        args.nparts,
+        adjlist,
         parts,
         is_weight,
         args.symmetric,
-        edge_property_map)
+        edge_property_map,
+        min_vertex=min_vertex,
+        )
 
 
 if __name__ == '__main__':

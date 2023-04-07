@@ -17,6 +17,11 @@ public:
       pickedSource = pickSource();
     } else {
       pickedSource = pickedSource_;
+      size_t visitedEdges = countVisitedEdges(pickedSource);
+      std::cout << "User specified root " << pickedSource << ", coverage "
+                << static_cast<float>(visitedEdges) /
+                       static_cast<float>(g_.num_edges_directed())
+                << '\n';
     }
   }
 
@@ -50,6 +55,27 @@ private:
 
   static constexpr const char *src_suffix() { return ".src.txt"; }
 
+  size_t countVisitedEdges(NodeID root) {
+    std::unordered_map<NodeID, size_t> visited;
+    std::queue<NodeID> q;
+    size_t visitedEdges = 0;
+    q.push(root);
+    visited.emplace(root, 0);
+    while (!q.empty()) {
+      auto node = q.front();
+      q.pop();
+      auto dist = visited.at(node);
+      for (NodeID v : g_.out_neigh(node)) {
+        if (visited.count(v) == 0) {
+          visited.emplace(v, dist + 1);
+          q.push(v);
+        }
+        visitedEdges++;
+      }
+    }
+    return visitedEdges;
+  }
+
   NodeID pickSource() {
 
     // Perform 10 BFS to pick up a suitable root.
@@ -62,23 +88,7 @@ private:
 #pragma omp parallel for shared(pickedSource, maxVisitedEdges)
     for (size_t i = 0; i < numIters; ++i) {
       NodeID root = numNodes * i / numIters;
-      std::unordered_map<NodeID, size_t> visited;
-      std::queue<NodeID> q;
-      size_t visitedEdges = 0;
-      q.push(root);
-      visited.emplace(root, 0);
-      while (!q.empty()) {
-        auto node = q.front();
-        q.pop();
-        auto dist = visited.at(node);
-        for (NodeID v : g_.out_neigh(node)) {
-          if (visited.count(v) == 0) {
-            visited.emplace(v, dist + 1);
-            q.push(v);
-          }
-          visitedEdges++;
-        }
-      }
+      size_t visitedEdges = countVisitedEdges(root);
       std::cout << "[Source] " << i << "th Src " << root << " VisitedEdges "
                 << visitedEdges << '\n';
 #pragma omp critical
