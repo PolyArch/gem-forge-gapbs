@@ -19,6 +19,16 @@
 #include "gem5/m5ops.h"
 #endif
 
+#ifdef USE_ADJ_LIST_SINGLE_LIST
+using AdjGraphT = AdjGraphSingleAdjListT;
+#define PRPushAdjFunc pageRankPushSingleAdjList
+#define PRPullAdjFunc pageRankPullSingleAdjList
+#else
+using AdjGraphT = AdjGraph;
+#define PRPushAdjFunc pageRankPushAdjList
+#define PRPullAdjFunc pageRankPullAdjList
+#endif
+
 /*
 GAP Benchmark Suite
 Kernel: PageRank (PR)
@@ -41,8 +51,9 @@ USE_ADJ_LIST: Use adjacent list instead of CSR.
 
 using namespace std;
 
-pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
-                             int warm_cache = 2, int num_threads = 1) {
+pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
+                         int warm_cache = 2, int num_threads = 1,
+                         bool graph_partition = false) {
   const auto num_nodes = g.num_nodes();
   const auto __attribute__((unused)) num_edges = g.num_edges_directed();
 
@@ -94,9 +105,6 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
                         num_nodes, 0, 0);
   m5_stream_nuca_region("gap.pr.score1", scores_data1, sizeof(ScoreT),
                         num_nodes, 0, 0);
-  m5_stream_nuca_set_property(scores_data1,
-                              STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                              roundUpPow2(num_nodes / 64) * sizeof(ScoreT));
   m5_stream_nuca_align(scores_data0, scores_data1, 0);
 
   m5_stream_nuca_region("gap.pr.out_neigh_index", out_neigh_index,
@@ -104,10 +112,20 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
   m5_stream_nuca_region("gap.pr.out_edge", out_edges, sizeof(NodeID), num_edges,
                         0, 0);
   m5_stream_nuca_align(out_neigh_index, scores_data1, 0);
-  m5_stream_nuca_align(out_edges, scores_data1,
-                       m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
-  m5_stream_nuca_align(out_edges, out_neigh_index,
-                       m5_stream_nuca_encode_csr_index());
+
+  if (graph_partition) {
+    // Inform the GemForge about the partitioned graph.
+    g.setStreamNUCAPartition(scores_data1, g.node_parts);
+    g.setStreamNUCAPartition(out_edges, g.out_edge_parts);
+  } else {
+    m5_stream_nuca_set_property(scores_data1,
+                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                roundUp(num_nodes / 64, 64) * sizeof(ScoreT));
+    m5_stream_nuca_align(out_edges, scores_data1,
+                         m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
+    m5_stream_nuca_align(out_edges, out_neigh_index,
+                         m5_stream_nuca_encode_csr_index());
+  }
   if (in_neigh_index != out_neigh_index) {
     // This is directed graph.
     m5_stream_nuca_region("gap.pr.in_neigh_index", in_neigh_index,
@@ -115,10 +133,15 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
     m5_stream_nuca_region("gap.pr.in_edge", in_edges, sizeof(NodeID), num_edges,
                           0, 0);
     m5_stream_nuca_align(in_neigh_index, scores_data1, 0);
-    m5_stream_nuca_align(in_edges, scores_data1,
-                         m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
-    m5_stream_nuca_align(in_edges, in_neigh_index,
-                         m5_stream_nuca_encode_csr_index());
+    if (graph_partition) {
+      // Inform the GemForge about the partitioned graph.
+      g.setStreamNUCAPartition(in_edges, g.in_edge_parts);
+    } else {
+      m5_stream_nuca_align(in_edges, scores_data1,
+                           m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
+      m5_stream_nuca_align(in_edges, in_neigh_index,
+                           m5_stream_nuca_encode_csr_index());
+    }
   }
 
   // Do a remap first.
@@ -135,11 +158,11 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
 #endif // GEM_FORGE
 
 #ifdef USE_PUSH
-  AdjGraph adjGraph(num_threads, num_nodes, out_neigh_index_offset, out_edges,
-                    scores_data1);
+  AdjGraphT adjGraph(num_threads, num_nodes, out_neigh_index_offset, out_edges,
+                     scores_data1);
 #else
-  AdjGraph adjGraph(num_threads, num_nodes, in_neigh_index_offset, in_edges,
-                    scores_data1);
+  AdjGraphT adjGraph(num_threads, num_nodes, in_neigh_index_offset, in_edges,
+                     scores_data1);
 #endif
 
 #ifndef GEM_FORGE
@@ -149,17 +172,6 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
   printf("AdjListGraph built.\n");
 #endif // GEM_FORGE
 #endif // USE_ADJ_LIST
-
-  // Start the threads.
-  {
-    omp_set_num_threads(num_threads);
-    float v;
-    float *pv = &v;
-#pragma omp parallel for schedule(static)
-    for (uint64_t i = 0; i < num_threads; ++i) {
-      __attribute__((unused)) volatile float v = *pv;
-    }
-  }
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
@@ -205,6 +217,17 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
 #endif
 
     std::cout << "Warm up done.\n";
+
+    // Start the threads.
+    {
+      omp_set_num_threads(num_threads);
+      float v;
+      float *pv = &v;
+#pragma omp parallel for schedule(static)
+      for (uint64_t i = 0; i < num_threads; ++i) {
+        __attribute__((unused)) volatile float v = *pv;
+      }
+    }
   }
 #endif // GEM_FORGE
 
@@ -231,11 +254,11 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
     /*********************************************************************
      * Push adj list.
      ********************************************************************/
-    pageRankPushAdjList(adjGraph,
+    PRPushAdjFunc(adjGraph,
 #ifdef SHUFFLE_NODES
-                        nodes_data,
+                  nodes_data,
 #endif
-                        scores_data0, scores_data1);
+                  scores_data0, scores_data1);
 
 #else
 
@@ -285,11 +308,11 @@ pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
     /*********************************************************************
      * Pull adj list.
      ********************************************************************/
-    error = pageRankPullAdjList(adjGraph,
+    error = PRPullAdjFunc(adjGraph,
 #ifdef SHUFFLE_NODES
-                                nodes_data,
+                          nodes_data,
 #endif
-                                scores_data0, scores_data1, base_score, kDamp);
+                          scores_data0, scores_data1, base_score, kDamp);
 
 #else
     /*********************************************************************
@@ -374,8 +397,8 @@ int main(int argc, char *argv[]) {
   Builder b(cli);
   Graph g = b.MakeGraph();
   auto PRBound = [&cli](const Graph &g) {
-    return PageRankPush(g, cli.max_iters(), cli.tolerance(), cli.warm_cache(),
-                        cli.num_threads());
+    return PageRank(g, cli.max_iters(), cli.tolerance(), cli.warm_cache(),
+                    cli.num_threads(), cli.graph_partition());
   };
   auto VerifierBound = [&cli](const Graph &g, const pvector<ScoreT> &scores) {
     return PRVerifier(g, scores, cli.tolerance());

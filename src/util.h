@@ -4,11 +4,13 @@
 #ifndef UTIL_H_
 #define UTIL_H_
 
+#include <cassert>
 #include <cinttypes>
+#include <fstream>
 #include <omp.h>
 #include <stdio.h>
 #include <string>
-#include <cassert>
+#include <vector>
 
 #include "timer.h"
 
@@ -111,6 +113,8 @@ uint32_t roundUpPow2(uint32_t v) {
   return v;
 }
 
+uint32_t roundUp(uint32_t v, uint32_t k) { return ((v + k - 1) / k) * k; }
+
 uint32_t log2Pow2(uint32_t v) {
   int log2;
   for (log2 = 0; v != 1; v >>= 1, log2++) {
@@ -163,5 +167,30 @@ void gf_warm_array(const char *name, void *buffer, uint64_t totalBytes) {
              100.f);
 }
 #endif
+
+/**
+ * Read the partiton file.
+ */
+std::vector<int> getNodePartitionSizes(const std::string &graphFn) {
+  auto pos = graphFn.rfind('.');
+  assert(pos != std::string::npos);
+  auto prefix = graphFn.substr(0, pos);
+  auto partitionFn = prefix + ".part.txt";
+  std::ifstream f(partitionFn);
+  assert(f.is_open());
+  std::string field;
+  f >> field;
+  assert(field == "PartSize");
+  int nParts;
+  f >> nParts;
+  assert(nParts > 0);
+  std::vector<int> partSizes;
+  for (int i = 0; i < nParts; ++i) {
+    size_t partSize;
+    f >> partSize;
+    partSizes.push_back(partSize);
+  }
+  return partSizes;
+}
 
 #endif // UTIL_H_

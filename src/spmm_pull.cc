@@ -60,7 +60,7 @@ typedef float ScoreT;
 
 const float kDamp = 0.85;
 
-pvector<ScoreT> PageRankPush(const Graph &g, int max_iters, double epsilon = 0,
+pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
                              int warm_cache = 2, int num_threads = 1) {
   const auto num_nodes = g.num_nodes();
   const auto num_edges = g.num_edges_directed();
@@ -334,7 +334,7 @@ int main(int argc, char *argv[]) {
   Builder b(cli);
   Graph g = b.MakeGraph();
   auto PRBound = [&cli](const Graph &g) {
-    return PageRankPush(g, cli.max_iters(), cli.tolerance(), cli.warm_cache(),
+    return PageRank(g, cli.max_iters(), cli.tolerance(), cli.warm_cache(),
                         cli.num_threads());
   };
   auto VerifierBound = [&cli](const Graph &g, const pvector<ScoreT> &scores) {

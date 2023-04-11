@@ -50,10 +50,23 @@ USE_SPATIAL_QUEUE: Use a spatially localized queue instead of default thread
     N clusters with one cluster per bank.
 */
 
+#ifdef USE_ADJ_LIST
+#ifdef USE_ADJ_LIST_SINGLE_LIST
+using AdjGraphT = AdjGraphSingleAdjListT;
+#define BFSPushFunc bfsPushSingleAdjList
+#else
+using AdjGraphT = AdjGraph;
+#define BFSPushFunc bfsPushAdjList
+#endif
+#else
+#define BFSPushFunc bfsPushCSR
+#endif
+
 using namespace std;
 
 pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
-                      int alpha = 15, int beta = 18, int warm_cache = 2) {
+                      int alpha = 15, int beta = 18, int warm_cache = 2,
+                      bool graph_partition = false) {
   PrintStep("Source", static_cast<int64_t>(source));
   Timer t;
   Bitmap curr(g.num_nodes());
@@ -119,21 +132,27 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
                           num_nodes, 0, 0);
     m5_stream_nuca_region("gap.bfs.next_parent", next_parent_data,
                           sizeof(NodeID), num_nodes, 0, 0);
-    m5_stream_nuca_set_property(parent_data,
-                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                                num_nodes_per_bank * sizeof(NodeID));
     m5_stream_nuca_align(next_parent_data, parent_data, 0);
 
-#ifndef USE_ADJ_LIST
     m5_stream_nuca_region("gap.bfs.out_neigh_index", out_neigh_index,
                           sizeof(EdgeIndexT), num_nodes, 0, 0);
     m5_stream_nuca_region("gap.bfs.out_edge", out_edges, sizeof(NodeID),
                           num_edges, 0, 0);
     m5_stream_nuca_align(out_neigh_index, parent_data, 0);
-    m5_stream_nuca_align(out_edges, parent_data,
-                         m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
-    m5_stream_nuca_align(out_edges, out_neigh_index,
-                         m5_stream_nuca_encode_csr_index());
+
+    if (graph_partition) {
+      g.setStreamNUCAPartition(parent_data, g.node_parts);
+      g.setStreamNUCAPartition(out_edges, g.out_edge_parts);
+    } else {
+      m5_stream_nuca_set_property(parent_data,
+                                  STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                  num_nodes_per_bank * sizeof(NodeID));
+      m5_stream_nuca_align(out_edges, parent_data,
+                           m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
+      m5_stream_nuca_align(out_edges, out_neigh_index,
+                           m5_stream_nuca_encode_csr_index());
+    }
+
     if (in_neigh_index != out_neigh_index) {
       // This is a directed graph.
       m5_stream_nuca_region("gap.bfs.in_neigh_index", in_neigh_index,
@@ -141,12 +160,16 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
       m5_stream_nuca_region("gap.bfs.in_edge", in_edges, sizeof(NodeID),
                             num_edges, 0, 0);
       m5_stream_nuca_align(in_neigh_index, parent_data, 0);
-      m5_stream_nuca_align(in_edges, parent_data,
-                           m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
-      m5_stream_nuca_align(in_edges, in_neigh_index,
-                           m5_stream_nuca_encode_csr_index());
+      if (graph_partition) {
+        g.setStreamNUCAPartition(in_edges, g.in_edge_parts);
+      } else {
+        m5_stream_nuca_align(
+            in_edges, parent_data,
+            m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
+        m5_stream_nuca_align(in_edges, in_neigh_index,
+                             m5_stream_nuca_encode_csr_index());
+      }
     }
-#endif
 
 #ifdef USE_SPATIAL_QUEUE
     m5_stream_nuca_region("gap.bfs_push.squeue", squeue.data, sizeof(NodeID),
@@ -155,6 +178,9 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
                           sizeof(*squeue.meta), num_banks, 0, 0);
     m5_stream_nuca_align(squeue.data, parent_data, 0);
     m5_stream_nuca_align(squeue.meta, parent_data, num_nodes_per_bank);
+    m5_stream_nuca_set_property(squeue.meta,
+                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                sizeof(*squeue.meta));
 
 #ifdef USE_SPATIAL_FRONTIER
     m5_stream_nuca_region("gap.bfs_push.squeue2", squeue2.data, sizeof(NodeID),
@@ -163,6 +189,9 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
                           sizeof(*squeue2.meta), num_banks, 0, 0);
     m5_stream_nuca_align(squeue2.data, parent_data, 0);
     m5_stream_nuca_align(squeue2.meta, parent_data, num_nodes_per_bank);
+    m5_stream_nuca_set_property(squeue2.meta,
+                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                sizeof(*squeue2.meta));
 #endif
 #endif
     m5_stream_nuca_remap();
@@ -172,7 +201,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 #ifdef USE_ADJ_LIST
 
   printf("Start to build AdjListGraph, node %luB.\n",
-         sizeof(AdjGraph::AdjListNode));
+         sizeof(AdjGraphT::AdjListNode));
 
 #ifndef GEM_FORGE
   Timer adjBuildTimer;
@@ -180,11 +209,11 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 #endif // GEM_FORGE
 
 #ifdef USE_PUSH
-  AdjGraph adjGraph(num_threads, g.num_nodes(), g.out_neigh_index_offset(),
-                    g.out_edges(), parent.data());
+  AdjGraphT adjGraph(num_threads, g.num_nodes(), g.out_neigh_index_offset(),
+                     g.out_edges(), parent.data());
 #else
-  AdjGraph adjGraph(num_threads, g.num_nodes(), g.in_neigh_index_offset(),
-                    g.in_edges(), parent.data());
+  AdjGraphT adjGraph(num_threads, g.num_nodes(), g.in_neigh_index_offset(),
+                     g.in_edges(), parent.data());
 #endif
 
 #ifndef GEM_FORGE
@@ -195,16 +224,6 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 #endif // GEM_FORGE
 
 #endif // USE_ADJ_LIST
-
-  {
-    omp_set_num_threads(num_threads);
-    float v;
-    float *pv = &v;
-#pragma omp parallel for schedule(static)
-    for (uint64_t i = 0; i < num_threads; ++i) {
-      __attribute__((unused)) volatile float v = *pv;
-    }
-  }
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
@@ -259,6 +278,16 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
     std::cout << "Warm up done.\n";
   }
 
+  {
+    omp_set_num_threads(num_threads);
+    float v;
+    float *pv = &v;
+#pragma omp parallel for schedule(static)
+    for (uint64_t i = 0; i < num_threads; ++i) {
+      __attribute__((unused)) volatile float v = *pv;
+    }
+  }
+
   m5_reset_stats(0, 0);
 #endif
 
@@ -296,7 +325,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 
 #ifdef USE_PUSH
 
-    bfsPush(
+    BFSPushFunc(
 #ifdef USE_ADJ_LIST
         adjGraph,
 #else
@@ -455,7 +484,9 @@ int main(int argc, char *argv[]) {
     int beta = 18;
     int warm_cache = cli.warm_cache();
     int num_threads = cli.num_threads();
-    return DOBFS(g, sp.PickNext(), num_threads, alpha, beta, warm_cache);
+    bool graph_partition = cli.graph_partition();
+    return DOBFS(g, sp.PickNext(), num_threads, alpha, beta, warm_cache,
+                 graph_partition);
   };
   SourcePicker<Graph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const Graph &g, const pvector<NodeID> &parent) {

@@ -226,7 +226,7 @@ copySpatialQueueToSpatialFrontier(SpatialQueue<NodeID> &squeue,
 }
 
 pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
-                           int warm_cache) {
+                           int warm_cache, bool graph_partition) {
   Timer t;
 
   // two element arrays for double buffering curr=iter&1, next=(iter+1)&1
@@ -242,7 +242,6 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
 #endif
 #endif
 
-#ifndef USE_ADJ_LIST
 #ifdef USE_EDGE_INDEX_OFFSET
   EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
 #else
@@ -250,7 +249,6 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
 #endif // USE_EDGE_INDEX_OFFSET
   WNode *out_edges = g.out_edges();
   auto num_edges = g.num_edges_directed();
-#endif
 
   auto num_nodes = g.num_nodes();
   pvector<WeightT> dist(g.num_nodes(), kDistInf);
@@ -288,23 +286,25 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
 
     m5_stream_nuca_region("gap.sssp.dist", dist_data, sizeof(WeightT),
                           num_nodes, 0, 0);
-    m5_stream_nuca_set_property(dist_data,
-                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                                num_nodes_per_bank * sizeof(WeightT));
-
-#ifndef USE_ADJ_LIST
-
     m5_stream_nuca_region("gap.sssp.out_neigh_index", out_neigh_index,
                           sizeof(EdgeIndexT), num_nodes, 0, 0);
     m5_stream_nuca_region("gap.sssp.out_edge", out_edges, sizeof(WNode),
                           num_edges, 0, 0);
     m5_stream_nuca_align(out_neigh_index, dist_data, 0);
-    m5_stream_nuca_align(out_edges, dist_data,
-                         m5_stream_nuca_encode_ind_align(
-                             offsetof(WNode, v), sizeof(((WNode *)0)->v)));
-    m5_stream_nuca_align(out_edges, out_neigh_index,
-                         m5_stream_nuca_encode_csr_index());
-#endif
+
+    if (graph_partition) {
+      g.setStreamNUCAPartition(dist_data, g.node_parts);
+      g.setStreamNUCAPartition(out_edges, g.out_edge_parts);
+    } else {
+      m5_stream_nuca_set_property(dist_data,
+                                  STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                  num_nodes_per_bank * sizeof(WeightT));
+      m5_stream_nuca_align(out_edges, dist_data,
+                           m5_stream_nuca_encode_ind_align(
+                               offsetof(WNode, v), sizeof(((WNode *)0)->v)));
+      m5_stream_nuca_align(out_edges, out_neigh_index,
+                           m5_stream_nuca_encode_csr_index());
+    }
 
 #ifdef USE_SPATIAL_QUEUE
     m5_stream_nuca_region("gap.sssp.squeue", squeue.data,
@@ -314,6 +314,9 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
                           sizeof(*squeue.meta), num_banks, 0, 0);
     m5_stream_nuca_align(squeue.data, dist_data, 0);
     m5_stream_nuca_align(squeue.meta, dist_data, num_nodes_per_bank);
+    m5_stream_nuca_set_property(squeue.meta,
+                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                sizeof(*squeue.meta));
 
 #ifdef USE_SPATIAL_FRONTIER
     m5_stream_nuca_region("gap.sssp.sfrontier", sfrontier.data,
@@ -322,6 +325,9 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
                           sizeof(*sfrontier.meta), num_banks, 0, 0);
     m5_stream_nuca_align(sfrontier.data, dist_data, 0);
     m5_stream_nuca_align(sfrontier.meta, dist_data, num_nodes_per_bank);
+    m5_stream_nuca_set_property(sfrontier.meta,
+                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                sizeof(*sfrontier.meta));
 
 #endif // USE_SPATIAL_FRONTIER
 #endif // USE_SPATIAL_QUEUE
@@ -738,7 +744,8 @@ int main(int argc, char *argv[]) {
   }
   SourcePicker<WGraph> sp(g, given_sources);
   auto SSSPBound = [&sp, &cli](const WGraph &g) {
-    return DeltaStep(g, sp.PickNext(), cli.num_threads(), cli.warm_cache());
+    return DeltaStep(g, sp.PickNext(), cli.num_threads(), cli.warm_cache(),
+                     cli.graph_partition());
   };
   SourcePicker<WGraph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const WGraph &g, const pvector<WeightT> &dist) {

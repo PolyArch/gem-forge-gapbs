@@ -48,7 +48,7 @@ typedef float ScoreT;
 
 using namespace std;
 
-pvector<ScoreT> GraphWarm(const GraphT &g, int warm_cache = 2,
+pvector<ScoreT> BuildAdjGraph(const GraphT &g, int warm_cache = 2,
                           int num_threads = 1) {
   const auto num_nodes = g.num_nodes();
   const auto __attribute__((unused)) num_edges = g.num_edges_directed();
@@ -245,7 +245,7 @@ int main(int argc, char *argv[]) {
   BuilderT b(cli);
   GraphT g = b.MakeGraph();
   auto PRBound = [&cli](const GraphT &g) {
-    return GraphWarm(g, cli.warm_cache(), cli.num_threads());
+    return BuildAdjGraph(g, cli.warm_cache(), cli.num_threads());
   };
   auto VerifierBound = [](const GraphT &g,
                           const pvector<ScoreT> &scores) -> bool {

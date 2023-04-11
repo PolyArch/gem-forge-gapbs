@@ -3,6 +3,7 @@ import sys
 import math
 import os
 import argparse
+import random
 
 def read_edge_list_as_adjlist(fn):
     adjlist = list()
@@ -59,12 +60,12 @@ def get_partition_list(parts):
         part_sets[p].append(v)
     return part_sets
 
-def analyze_partition(adjlist, edge_cuts, parts):
+def analyze_partition(adjlist, parts, out_fn):
     """
     Print out number of edges across partitions.
     """
     num_edges = sum([len(x) for x in adjlist])
-    print(f'EdgeCut {edge_cuts} TotalDirEdges {num_edges}')
+    print(f'TotalDirEdges {num_edges}')
     """
     Analyze each average parition size and variation.
     """
@@ -108,6 +109,16 @@ def analyze_partition(adjlist, edge_cuts, parts):
     print(f'TotalInterlNodes {total_internal_nodes} Ratio {total_internal_nodes / len(adjlist)}')
     print(f'TotalInterlEdges {total_internal_edges} TotalEdges {total_edges} Ratio {total_internal_edges / total_edges}')
 
+    with open(out_fn, 'w') as f:
+        f.write(f'PartSize {num_parts} ')
+        for pid in range(num_parts):
+            part_size = len(part_sets[pid])
+            f.write(f'{part_size} ')
+        f.write('\n')
+        f.write(f'TotalEdges {total_edges}\n')
+        f.write(f'TotalInternalEdges {total_internal_edges}\n')
+        f.write(f'InternalEdgesRatio {total_internal_edges / total_edges}\n')
+
 def dump_adjlist(adjlist, prefix, symmetry):
     el_fn = f'{prefix}.el'
     with open(el_fn, 'w') as f:
@@ -121,12 +132,15 @@ def dump_adjlist(adjlist, prefix, symmetry):
         os.system(f'./converter -f {el_fn} -b {prefix}')
         os.system(f'./converter -f {el_fn} -b {prefix} -w')
 
-def dump_partition(original_fn, n_parts, adjlist,
+def dump_partition(original_fn,
+    n_parts,
+    adjlist,
     parts,
     is_weight,
     is_symmetry,
     edge_property_map,
     min_vertex,
+    part_method,
     ):
 
     partitions = get_partition_list(parts)
@@ -154,11 +168,11 @@ def dump_partition(original_fn, n_parts, adjlist,
                 reordered_edge_properties.append(edge_property_map[u][v])
 
     prefix = original_fn[:original_fn.rfind('.')]
-    fn = f'{prefix}-metis{n_parts}'
+    fn = f'{prefix}-{part_method}{n_parts}'
     if is_weight:
-        el_fn = f'{prefix}-metis{n_parts}.wel'
+        el_fn = f'{prefix}-{part_method}{n_parts}.wel'
     else:
-        el_fn = f'{prefix}-metis{n_parts}.el'
+        el_fn = f'{prefix}-{part_method}{n_parts}.el'
     with open(el_fn, 'w') as f:
         if reordered_edge_properties:
             assert(len(reordered_edge_properties) == len(reordered_edge_list))
@@ -235,7 +249,19 @@ def bounded_dfs(adjlist, bounded_depth):
                 edge_cuts += 1
     return (edge_cuts, clustered_nodes)
 
+def original_partition(adjlist, nparts):
+    num_nodes = len(adjlist)
+    parts = [0] * num_nodes
+    part_size = (num_nodes + nparts - 1) // nparts
+    for i in range(num_nodes):
+        parts[i] = i // part_size
+        assert(parts[i] < nparts)
+    return parts
 
+def random_partition(adjlist, nparts):
+    parts = original_partition(adjlist, nparts)
+    random.shuffle(parts)
+    return parts
 
 def main(argv):
 
@@ -249,6 +275,9 @@ def main(argv):
     parser.add_argument('--symmetric',
         action='store_true', default=False,
         help='Symetric')      
+    parser.add_argument('--part',
+        choices=['metis', 'orig', 'rnd'], default=metis,
+        help='How to partition the graph')      
     parser.add_argument('--out-fn', '-o',
         type=str, default="float-trace.csv",
         help='Output filename')    
@@ -260,11 +289,18 @@ def main(argv):
     prefix = args.fn[:args.fn.rfind('.')]
     # dump_adjlist(adjlist, prefix, symmetry)
 
-    print('Begin partition')
-    edge_cuts, parts = metis.part_graph(adjlist, args.nparts)
+    print(f'Begin partition {args.part}')
+    if args.part == 'metis':
+        edge_cuts, parts = metis.part_graph(adjlist, args.nparts)
+    elif args.part == 'orig':
+        parts = original_partition(adjlist, args.nparts)
+    elif args.part == 'rnd':
+        parts = random_partition(adjlist, args.nparts)
+
     print('End partition')
     # edge_cuts, parts = bounded_dfs(adjlist, nparts)
-    analyze_partition(adjlist, edge_cuts, parts)
+    part_fn = f'{prefix}-{args.part}{args.nparts}.part.txt'
+    analyze_partition(adjlist, parts, out_fn=part_fn)
     dump_partition(args.fn,
         args.nparts,
         adjlist,
@@ -273,6 +309,7 @@ def main(argv):
         args.symmetric,
         edge_property_map,
         min_vertex=min_vertex,
+        part_method=args.part,
         )
 
 

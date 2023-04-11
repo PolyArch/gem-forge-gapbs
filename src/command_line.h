@@ -28,7 +28,7 @@ protected:
   int argc_;
   char **argv_;
   std::string name_;
-  std::string get_args_ = "f:g:hk:su:c:";
+  std::string get_args_ = "f:g:hk:su:c:j";
   std::vector<std::string> help_strings_;
 
   int scale_ = -1;
@@ -43,6 +43,7 @@ protected:
    * 2: warm up everything.
    */
   int warm_cache_ = 2;
+  bool graph_partition_ = false;
 
   void AddHelpLine(char opt, std::string opt_arg, std::string text,
                    std::string def = "") {
@@ -69,6 +70,7 @@ public:
                 std::to_string(degree_));
     AddHelpLine('c', "cache", "warm up cache to certain level",
                 std::to_string(warm_cache_));
+    AddHelpLine('j', "partition", "distribute graph in partition", "false");
   }
 
   bool ParseArgs() {
@@ -110,6 +112,9 @@ public:
     case 'c':
       warm_cache_ = atoi(opt_arg);
       break;
+    case 'j':
+      graph_partition_ = true;
+      break;
     }
   }
 
@@ -127,6 +132,7 @@ public:
   bool symmetrize() const { return symmetrize_; }
   bool uniform() const { return uniform_; }
   int warm_cache() const { return warm_cache_; }
+  bool graph_partition() const { return graph_partition_; }
 };
 
 class CLApp : public CLBase {

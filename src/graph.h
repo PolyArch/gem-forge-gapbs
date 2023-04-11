@@ -15,6 +15,10 @@
 #include "pvector.h"
 #include "util.h"
 
+#ifdef GEM_FORGE
+#include "gem5/m5ops.h"
+#endif
+
 /*
 GAP Benchmark Suite
 Class:  CSRGraph
@@ -298,6 +302,47 @@ private:
   DestID_ **in_index_ = nullptr;
   NodeID_ *in_index_offset_ = nullptr;
   DestID_ *in_neighbors_ = nullptr;
+
+public:
+  using PartitionT = std::vector<NodeID_>;
+  void setPartitions(const PartitionT &node_part_sizes) {
+    NodeID_ node_acc = 0;
+    NodeID_ in_acc = 0;
+    NodeID_ out_acc = 0;
+    auto out_begin = this->out_index_[0];
+    auto in_begin = this->out_index_[0];
+    for (auto part_size : node_part_sizes) {
+      node_acc += part_size;
+      assert(node_acc > 0);
+      if (node_acc > this->num_nodes_) {
+        node_acc = this->num_nodes_;
+      }
+      auto out_end = this->out_index_[node_acc];
+      out_acc = out_end - out_begin;
+      auto in_end = this->in_index_[node_acc];
+      in_acc = in_end - in_begin;
+      // Adjust to bytes.
+      this->node_parts.push_back(node_acc * sizeof(NodeID_));
+      this->in_edge_parts.push_back(in_acc * sizeof(DestID_));
+      this->out_edge_parts.push_back(out_acc * sizeof(DestID_));
+    }
+    assert(node_acc == this->num_nodes_);
+  }
+
+  void setStreamNUCAPartition(void *ptr, const PartitionT &parts) const {
+#ifdef GEM_FORGE
+    auto parts_ptr = parts.data();
+    auto parts_int = reinterpret_cast<int64_t>(parts_ptr);
+    assert(parts_int > 0);
+    m5_stream_nuca_set_property(ptr, STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                -parts_int);
+#endif
+  }
+
+  // Data structures to remember the partition.
+  PartitionT node_parts;
+  PartitionT in_edge_parts;
+  PartitionT out_edge_parts;
 };
 
 #endif // GRAPH_H_

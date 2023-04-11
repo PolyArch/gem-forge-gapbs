@@ -225,7 +225,13 @@ public:
       if (cli_.filename() != "") {
         Reader<NodeID_, DestID_, WeightT_, invert> r(cli_.filename());
         if ((r.GetSuffix() == ".sg") || (r.GetSuffix() == ".wsg")) {
-          return r.ReadSerializedGraph();
+          auto ret = r.ReadSerializedGraph();
+          // Partition only works for serialized graph.
+          if (cli_.graph_partition()) {
+            auto node_part_sizes = getNodePartitionSizes(cli_.filename());
+            ret.setPartitions(node_part_sizes);
+          }
+          return ret;
         } else {
           el = r.ReadFile(needs_weights_);
         }

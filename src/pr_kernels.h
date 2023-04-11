@@ -149,6 +149,103 @@ __attribute__((noinline)) void pageRankPushAdjList(AdjGraph &graph,
   }
 }
 
+__attribute__((noinline)) void
+pageRankPushSingleAdjList(AdjGraphSingleAdjListT &graph,
+#ifdef SHUFFLE_NODES
+                          NodeID *nodes,
+#endif
+                          ScoreT *scores, ScoreT *next_scores) {
+
+  auto num_nodes = graph.N;
+  auto adj_list = graph.adjList;
+  auto degrees = graph.degrees;
+
+#ifdef SHUFFLE_NODES
+
+#pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(                       \
+    scores, next_scores, nodes, adj_list, degrees)
+  for (int64_t i = 0; i < num_nodes; i++) {
+
+#pragma ss stream_name "gap.pr_push.atomic.node.ld"
+    NodeID n = nodes[i];
+
+#else
+
+#pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(scores, next_scores,   \
+                                                        adj_list, degrees)
+  for (int64_t i = 0; i < num_nodes; i++) {
+
+    int64_t n = i;
+
+#endif // SHUFFLE_NODES
+
+    auto adj_ptr = adj_list + n;
+
+#pragma ss stream_name "gap.pr_push.adj.lhs.ld"
+    auto *lhs = reinterpret_cast<NodeID *>(adj_ptr[0]);
+
+#pragma ss stream_name "gap.pr_push.adj.rhs.ld"
+    auto *rhs = reinterpret_cast<NodeID *>(adj_ptr[1]);
+
+#pragma ss stream_name "gap.pr_push.adj.score.ld"
+    ScoreT score = scores[n];
+
+#pragma ss stream_name "gap.pr_push.adj.degree.ld"
+    int64_t out_degree = degrees[n];
+
+    ScoreT outgoing_contrib = score / out_degree;
+
+    auto *rhs_node = AdjGraphSingleAdjListT::getNodePtr(rhs);
+    auto rhs_offset = AdjGraphSingleAdjListT::getNodeOffset(rhs);
+
+    if (lhs != rhs) {
+
+      while (true) {
+        auto *lhs_node = AdjGraphSingleAdjListT::getNodePtr(lhs);
+        const auto local_rhs =
+            lhs_node != rhs_node
+                ? (lhs_node->edges + AdjGraphSingleAdjListT::EdgesPerNode)
+                : rhs;
+        const auto numEdges = local_rhs - lhs;
+
+        int64_t j = 0;
+
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+        while (true) {
+
+#pragma ss stream_name "gap.pr_push.adj.out_v.ld"
+          NodeID v = lhs_node->edges[j];
+
+#pragma ss stream_name "gap.pr_push.adj.score.at"
+          __atomic_fetch_fadd(next_scores + v, outgoing_contrib,
+                              __ATOMIC_RELAXED);
+
+          j++;
+          if (j == numEdges) {
+            break;
+          }
+        }
+
+#pragma ss stream_name "gap.pr_push.adj.next_node.ld"
+        auto next_node = lhs_node->next;
+
+        lhs = next_node->edges;
+
+        /**
+         * I need to write this werid loop break condition to to distinguish lhs
+         * and next_lhs for LoopBound.
+         * TODO: Fix this in the compiler.
+         */
+        bool rhs_zero = next_node == rhs_node && rhs_offset == 0;
+        bool should_break = rhs_zero || (lhs_node == rhs_node);
+        if (should_break) {
+          break;
+        }
+      }
+    }
+  }
+}
+
 __attribute__((noinline)) ScoreT
 pageRankPushUpdate(NodeID num_nodes, ScoreT *scores, ScoreT *next_scores,
                    ScoreT base_score, ScoreT kDamp) {
@@ -344,6 +441,116 @@ __attribute__((noinline)) ScoreT pageRankPullAdjList(AdjGraph &graph,
       income_total += income;
 
       cur_node = next_node;
+    }
+
+#pragma ss stream_name "gap.pr_pull.rdc.score.ld"
+    ScoreT score = scores[n];
+
+    ScoreT new_score = base_score + kDamp * income_total;
+
+    error += new_score > score ? (new_score - score) : (score - new_score);
+
+#pragma ss stream_name "gap.pr_pull.rdc.score.st"
+    scores[n] = new_score;
+  }
+
+  return error;
+}
+
+__attribute__((noinline)) ScoreT
+pageRankPullSingleAdjList(AdjGraphSingleAdjListT &graph,
+#ifdef SHUFFLE_NODES
+                          NodeID *nodes,
+#endif
+                          ScoreT *scores, ScoreT *out_contribs,
+                          ScoreT base_score, ScoreT kDamp) {
+
+  auto num_nodes = graph.N;
+  auto adj_list = graph.adjList;
+
+  ScoreT error = 0;
+
+#ifdef SHUFFLE_NODES
+
+#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+:error) firstprivate(                       \
+    scores, out_contribs, nodes, num_nodes, adj_list, base_score, kDamp)
+  for (int64_t i = 0; i < num_nodes; i++) {
+
+#pragma ss stream_name "gap.pr_pull.rdc.node.ld"
+    NodeID n = nodes[i];
+
+#else
+
+#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+:error) firstprivate(                       \
+    scores, out_contribs, num_nodes, adj_list, base_score, kDamp)
+  for (int64_t i = 0; i < num_nodes; i++) {
+
+    int64_t n = i;
+
+#endif // SHUFFLE_NODES
+
+    auto adj_ptr = adj_list + n;
+
+#pragma ss stream_name "gap.pr_pull.rdc.lhs.ld"
+    auto *lhs = reinterpret_cast<NodeID *>(adj_ptr[0]);
+
+#pragma ss stream_name "gap.pr_pull.rdc.rhs.ld"
+    auto *rhs = reinterpret_cast<NodeID *>(adj_ptr[1]);
+
+    auto *rhs_node = AdjGraphSingleAdjListT::getNodePtr(rhs);
+    auto rhs_offset = AdjGraphSingleAdjListT::getNodeOffset(rhs);
+
+    ScoreT income_total = 0;
+
+    if (lhs != rhs) {
+
+      while (true) {
+        auto *lhs_node = AdjGraphSingleAdjListT::getNodePtr(lhs);
+        const auto local_rhs =
+            lhs_node != rhs_node
+                ? (lhs_node->edges + AdjGraphSingleAdjListT::EdgesPerNode)
+                : rhs;
+        const auto numEdges = local_rhs - lhs;
+
+        ScoreT income = 0;
+
+        int64_t j = 0;
+
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+        while (true) {
+
+#pragma ss stream_name "gap.pr_pull.rdc.v.ld"
+          NodeID v = lhs_node->edges[j];
+
+#pragma ss stream_name "gap.pr_pull.rdc.contrib.ld"
+          ScoreT contrib = out_contribs[v];
+
+          income += contrib;
+
+          j++;
+          if (j == numEdges) {
+            break;
+          }
+        }
+
+        income_total += income;
+
+#pragma ss stream_name "gap.pr_pull.rdc.next_node.ld"
+        auto next_node = lhs_node->next;
+
+        lhs = next_node->edges;
+
+        /**
+         * I need to write this werid loop break condition to to distinguish lhs
+         * and next_lhs for LoopBound.
+         * TODO: Fix this in the compiler.
+         */
+        bool rhs_zero = next_node == rhs_node && rhs_offset == 0;
+        bool should_break = rhs_zero || (lhs_node == rhs_node);
+        if (should_break) {
+          break;
+        }
+      }
     }
 
 #pragma ss stream_name "gap.pr_pull.rdc.score.ld"

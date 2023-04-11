@@ -3,7 +3,9 @@
 AFFINITY_ALLOC_INC_PATH=${GEM_FORGE_TOP}/lib/affinity_alloc
 AFFINITY_ALLOC_LIB_PATH=${GEM_FORGE_TOP}/lib/affinity_alloc/build
 
-CXX_FLAGS += -std=c++11 -O3 -Wall -I${AFFINITY_ALLOC_INC_PATH}
+GEM_FORGE_INC_PATH=${GEM_FORGE_TOP}/gem5/include
+
+CXX_FLAGS += -std=c++11 -O3 -Wall -I${AFFINITY_ALLOC_INC_PATH} -I${GEM_FORGE_INC_PATH}
 LINK_FLAGS += -L${AFFINITY_ALLOC_LIB_PATH} -lAffinityAlloc
 PAR_FLAG = -fopenmp
 
@@ -27,6 +29,7 @@ KERNELS += pr_push
 KERNELS += pr_push_adj_rnd
 KERNELS += pr_push_adj_lnr
 KERNELS += pr_push_adj_aff
+KERNELS += pr_push_adj_uno_aff
 KERNELS += bfs_push
 KERNELS += bfs_push_adj_rnd_spatial
 KERNELS += bfs_push_adj_rnd_sf
@@ -63,7 +66,10 @@ SUITE = $(KERNELS) converter gscore bound_dfs nuca_analysis
 .PHONY: all
 all: $(SUITE)
 
-% : src/%.cc src/*.h
+build_adj_list_graph: src/build_adj_list_graph.cc src/*.hh
+	$(CXX) -DUSE_AFFINITY_ALLOC $(CXX_FLAGS) $< $(LINK_FLAGS) -o $@
+
+%: src/%.cc src/*.h
 	$(CXX) $(CXX_FLAGS) $< $(LINK_FLAGS) -o $@
 
 # Testing
