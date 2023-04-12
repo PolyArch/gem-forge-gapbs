@@ -225,170 +225,30 @@ copySpatialQueueToSpatialFrontier(SpatialQueue<NodeID> &squeue,
   }
 }
 
-pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
-                           int warm_cache, bool graph_partition) {
-  Timer t;
+__attribute__((noinline)) void DeltaStepImpl(
 
-  // two element arrays for double buffering curr=iter&1, next=(iter+1)&1
-  BinIndexT shared_indexes[2] = {0, kMaxBin};
+#ifdef USE_ADJ_LIST
+    WAdjGraph &adjGraph,
+#else
+    const WGraph &g,
+#endif
+
+    BinIndexT *shared_indexes,
+
+#ifdef USE_SPATIAL_QUEUE
+    SpatialQueue<NodeID> &squeue,
+#ifdef USE_SPATIAL_FRONTIER
+    SpatialQueue<NodeID> &sfrontier,
+#endif
+#endif
 
 #ifndef USE_SPATIAL_FRONTIER
-  pvector<NodeID> frontier(g.num_edges_directed());
-  size_t frontier_tails[2] = {1, 0};
-  frontier[0] = source;
-#else
-#ifndef USE_SPATIAL_QUEUE
-#error "Spatial frontier must be used with spatial queue."
-#endif
+    pvector<NodeID> &frontier, size_t *frontier_tails,
 #endif
 
-#ifdef USE_EDGE_INDEX_OFFSET
-  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
-#else
-  EdgeIndexT *out_neigh_index = g.out_neigh_index();
-#endif // USE_EDGE_INDEX_OFFSET
-  WNode *out_edges = g.out_edges();
-  auto num_edges = g.num_edges_directed();
+    pvector<WeightT> &dist
 
-  auto num_nodes = g.num_nodes();
-  pvector<WeightT> dist(g.num_nodes(), kDistInf);
-  dist[source] = 0;
-
-  const int num_banks = 64;
-  const auto num_nodes_per_bank = roundUpPow2(num_nodes / num_banks);
-
-#ifdef USE_SPATIAL_QUEUE
-  /**
-   * We have a spatial queue for each bank, and with bins.
-   */
-  const auto node_hash_mask = num_banks - 1;
-  const auto node_hash_shift = log2Pow2(num_nodes_per_bank);
-  SpatialQueue<NodeID> squeue(num_banks, kMaxNumBin,
-                              num_nodes_per_bank * kMaxNumBin * kDelta,
-                              node_hash_shift, node_hash_mask);
-
-#ifdef USE_SPATIAL_FRONTIER
-  /**
-   * We also have a spatial queue for the frontier.
-   */
-  SpatialQueue<NodeID> sfrontier(num_banks, 1 /* nBins */,
-                                 num_nodes_per_bank * kDelta, node_hash_shift,
-                                 node_hash_mask);
-  sfrontier.enque(source, 0 /* binIdx */);
-
-#endif
-
-#endif
-
-#ifdef GEM_FORGE
-  {
-    WeightT *dist_data = dist.data();
-
-    m5_stream_nuca_region("gap.sssp.dist", dist_data, sizeof(WeightT),
-                          num_nodes, 0, 0);
-    m5_stream_nuca_region("gap.sssp.out_neigh_index", out_neigh_index,
-                          sizeof(EdgeIndexT), num_nodes, 0, 0);
-    m5_stream_nuca_region("gap.sssp.out_edge", out_edges, sizeof(WNode),
-                          num_edges, 0, 0);
-    m5_stream_nuca_align(out_neigh_index, dist_data, 0);
-
-    if (graph_partition) {
-      g.setStreamNUCAPartition(dist_data, g.node_parts);
-      g.setStreamNUCAPartition(out_edges, g.out_edge_parts);
-    } else {
-      m5_stream_nuca_set_property(dist_data,
-                                  STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                                  num_nodes_per_bank * sizeof(WeightT));
-      m5_stream_nuca_align(out_edges, dist_data,
-                           m5_stream_nuca_encode_ind_align(
-                               offsetof(WNode, v), sizeof(((WNode *)0)->v)));
-      m5_stream_nuca_align(out_edges, out_neigh_index,
-                           m5_stream_nuca_encode_csr_index());
-    }
-
-#ifdef USE_SPATIAL_QUEUE
-    m5_stream_nuca_region("gap.sssp.squeue", squeue.data,
-                          sizeof(NodeID) * kMaxNumBin * kDelta, num_nodes, 0,
-                          0);
-    m5_stream_nuca_region("gap.sssp.squeue_meta", squeue.meta,
-                          sizeof(*squeue.meta), num_banks, 0, 0);
-    m5_stream_nuca_align(squeue.data, dist_data, 0);
-    m5_stream_nuca_align(squeue.meta, dist_data, num_nodes_per_bank);
-    m5_stream_nuca_set_property(squeue.meta,
-                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                                sizeof(*squeue.meta));
-
-#ifdef USE_SPATIAL_FRONTIER
-    m5_stream_nuca_region("gap.sssp.sfrontier", sfrontier.data,
-                          sizeof(NodeID) * kDelta, num_nodes, 0, 0);
-    m5_stream_nuca_region("gap.sssp.sfrontier_meta", sfrontier.meta,
-                          sizeof(*sfrontier.meta), num_banks, 0, 0);
-    m5_stream_nuca_align(sfrontier.data, dist_data, 0);
-    m5_stream_nuca_align(sfrontier.meta, dist_data, num_nodes_per_bank);
-    m5_stream_nuca_set_property(sfrontier.meta,
-                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                                sizeof(*sfrontier.meta));
-
-#endif // USE_SPATIAL_FRONTIER
-#endif // USE_SPATIAL_QUEUE
-    m5_stream_nuca_remap();
-  }
-#endif // GEM_FORGE
-
-#ifdef USE_ADJ_LIST
-  printf("Start to build AdjListGraph, node %luB.\n",
-         sizeof(WAdjGraph::AdjListNode));
-#ifndef GEM_FORGE
-  Timer adjBuildTimer;
-  adjBuildTimer.Start();
-#endif // GEM_FORGE
-  WAdjGraph adjGraph(num_threads, g.num_nodes(), g.out_neigh_index_offset(),
-                     g.out_edges(), dist.data());
-#ifndef GEM_FORGE
-  adjBuildTimer.Stop();
-  printf("AdjListGraph built %10.5lfs.\n", adjBuildTimer.Seconds());
-#else
-  printf("AdjListGraph built.\n");
-#endif // GEM_FORGE
-#endif // USE_ADJ_LIST
-
-  {
-    omp_set_num_threads(num_threads);
-    float v;
-    float *pv = &v;
-#pragma omp parallel for schedule(static)
-    for (uint64_t i = 0; i < num_threads; ++i) {
-      __attribute__((unused)) volatile float v = *pv;
-    }
-  }
-
-  t.Start();
-
-#ifdef GEM_FORGE
-  m5_detail_sim_start();
-  if (warm_cache > 0) {
-    WeightT *dist_data = dist.data();
-    gf_warm_array("dist", dist_data, num_nodes * sizeof(dist_data[0]));
-
-#ifdef USE_ADJ_LIST
-    gf_warm_array("adj_list", adjGraph.adjList,
-                  num_nodes * sizeof(adjGraph.adjList[0]));
-
-    if (warm_cache > 1) {
-      adjGraph.warmAdjList();
-    }
-#else
-    gf_warm_array("out_neigh_index", out_neigh_index,
-                  num_nodes * sizeof(out_neigh_index[0]));
-    if (warm_cache > 1) {
-      WNode *out_edges = g.out_edges();
-      gf_warm_array("out_edges", out_edges, num_edges * sizeof(out_edges[0]));
-    }
-#endif
-    std::cout << "Warm up done.\n";
-  }
-  m5_reset_stats(0, 0);
-#endif
+) {
 
 #ifndef GEM_FORGE
   uint64_t processed_vertexes = 0;
@@ -398,6 +258,14 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
   auto adj_list = adjGraph.adjList;
 #pragma omp parallel firstprivate(adj_list)
 #else
+
+#ifdef USE_EDGE_INDEX_OFFSET
+  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
+#else
+  EdgeIndexT *out_neigh_index = g.out_neigh_index();
+#endif // USE_EDGE_INDEX_OFFSET
+  WNode *out_edges = g.out_edges();
+
 #pragma omp parallel firstprivate(out_neigh_index, out_edges)
 #endif
   {
@@ -675,6 +543,186 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
 #pragma omp single
     cout << "took " << iter << " iterations" << endl;
   }
+}
+
+pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
+                           int warm_cache, bool graph_partition) {
+  Timer t;
+
+  // two element arrays for double buffering curr=iter&1, next=(iter+1)&1
+  BinIndexT shared_indexes[2] = {0, kMaxBin};
+
+#ifndef USE_SPATIAL_FRONTIER
+  pvector<NodeID> frontier(g.num_edges_directed());
+  size_t frontier_tails[2] = {1, 0};
+  frontier[0] = source;
+#else
+#ifndef USE_SPATIAL_QUEUE
+#error "Spatial frontier must be used with spatial queue."
+#endif
+#endif
+
+#ifdef USE_EDGE_INDEX_OFFSET
+  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
+#else
+  EdgeIndexT *out_neigh_index = g.out_neigh_index();
+#endif // USE_EDGE_INDEX_OFFSET
+  WNode *out_edges = g.out_edges();
+  auto num_edges = g.num_edges_directed();
+
+  auto num_nodes = g.num_nodes();
+  pvector<WeightT> dist(g.num_nodes(), kDistInf);
+  dist[source] = 0;
+
+  const int num_banks = 64;
+  const auto num_nodes_per_bank = roundUpPow2(num_nodes / num_banks);
+
+#ifdef USE_SPATIAL_QUEUE
+  /**
+   * We have a spatial queue for each bank, and with bins.
+   */
+  const auto node_hash_mask = num_banks - 1;
+  const auto node_hash_shift = log2Pow2(num_nodes_per_bank);
+  SpatialQueue<NodeID> squeue(num_banks, kMaxNumBin,
+                              num_nodes_per_bank * kMaxNumBin * kDelta,
+                              node_hash_shift, node_hash_mask);
+
+#ifdef USE_SPATIAL_FRONTIER
+  /**
+   * We also have a spatial queue for the frontier.
+   */
+  SpatialQueue<NodeID> sfrontier(num_banks, 1 /* nBins */,
+                                 num_nodes_per_bank * kDelta, node_hash_shift,
+                                 node_hash_mask);
+  sfrontier.enque(source, 0 /* binIdx */);
+
+#endif
+
+#endif
+
+#ifdef GEM_FORGE
+  {
+    WeightT *dist_data = dist.data();
+
+    m5_stream_nuca_region("gap.sssp.dist", dist_data, sizeof(WeightT),
+                          num_nodes, 0, 0);
+    m5_stream_nuca_region("gap.sssp.out_neigh_index", out_neigh_index,
+                          sizeof(EdgeIndexT), num_nodes, 0, 0);
+    m5_stream_nuca_region("gap.sssp.out_edge", out_edges, sizeof(WNode),
+                          num_edges, 0, 0);
+    m5_stream_nuca_align(out_neigh_index, dist_data, 0);
+
+    if (graph_partition) {
+      g.setStreamNUCAPartition(dist_data, g.node_parts);
+      g.setStreamNUCAPartition(out_edges, g.out_edge_parts);
+    } else {
+      m5_stream_nuca_set_property(dist_data,
+                                  STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                  num_nodes_per_bank * sizeof(WeightT));
+      m5_stream_nuca_align(out_edges, dist_data,
+                           m5_stream_nuca_encode_ind_align(
+                               offsetof(WNode, v), sizeof(((WNode *)0)->v)));
+      m5_stream_nuca_align(out_edges, out_neigh_index,
+                           m5_stream_nuca_encode_csr_index());
+    }
+
+#ifdef USE_SPATIAL_QUEUE
+    m5_stream_nuca_region("gap.sssp.squeue", squeue.data,
+                          sizeof(NodeID) * kMaxNumBin * kDelta, num_nodes, 0,
+                          0);
+    m5_stream_nuca_region("gap.sssp.squeue_meta", squeue.meta,
+                          sizeof(*squeue.meta), num_banks, 0, 0);
+    m5_stream_nuca_align(squeue.data, dist_data, 0);
+    m5_stream_nuca_align(squeue.meta, dist_data, num_nodes_per_bank);
+    m5_stream_nuca_set_property(squeue.meta,
+                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                sizeof(*squeue.meta));
+
+#ifdef USE_SPATIAL_FRONTIER
+    m5_stream_nuca_region("gap.sssp.sfrontier", sfrontier.data,
+                          sizeof(NodeID) * kDelta, num_nodes, 0, 0);
+    m5_stream_nuca_region("gap.sssp.sfrontier_meta", sfrontier.meta,
+                          sizeof(*sfrontier.meta), num_banks, 0, 0);
+    m5_stream_nuca_align(sfrontier.data, dist_data, 0);
+    m5_stream_nuca_align(sfrontier.meta, dist_data, num_nodes_per_bank);
+    m5_stream_nuca_set_property(sfrontier.meta,
+                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                                sizeof(*sfrontier.meta));
+
+#endif // USE_SPATIAL_FRONTIER
+#endif // USE_SPATIAL_QUEUE
+    m5_stream_nuca_remap();
+  }
+#endif // GEM_FORGE
+
+#ifdef USE_ADJ_LIST
+  printf("Start to build AdjListGraph, node %luB.\n",
+         sizeof(WAdjGraph::AdjListNode));
+#ifndef GEM_FORGE
+  Timer adjBuildTimer;
+  adjBuildTimer.Start();
+#endif // GEM_FORGE
+  WAdjGraph adjGraph(num_threads, g.num_nodes(), g.out_neigh_index_offset(),
+                     g.out_edges(), dist.data());
+#ifndef GEM_FORGE
+  adjBuildTimer.Stop();
+  printf("AdjListGraph built %10.5lfs.\n", adjBuildTimer.Seconds());
+#else
+  printf("AdjListGraph built.\n");
+#endif // GEM_FORGE
+#endif // USE_ADJ_LIST
+
+  t.Start();
+
+#ifdef GEM_FORGE
+  m5_detail_sim_start();
+  if (warm_cache > 0) {
+    WeightT *dist_data = dist.data();
+    gf_warm_array("dist", dist_data, num_nodes * sizeof(dist_data[0]));
+
+#ifdef USE_ADJ_LIST
+    gf_warm_array("adj_list", adjGraph.adjList,
+                  num_nodes * sizeof(adjGraph.adjList[0]));
+
+    if (warm_cache > 1) {
+      adjGraph.warmAdjList();
+    }
+#else
+    gf_warm_array("out_neigh_index", out_neigh_index,
+                  num_nodes * sizeof(out_neigh_index[0]));
+    if (warm_cache > 1) {
+      WNode *out_edges = g.out_edges();
+      gf_warm_array("out_edges", out_edges, num_edges * sizeof(out_edges[0]));
+    }
+#endif
+    std::cout << "Warm up done.\n";
+  }
+
+  startThreads(num_threads);
+
+  m5_reset_stats(0, 0);
+#endif
+
+  DeltaStepImpl(
+#ifdef USE_ADJ_LIST
+      adjGraph,
+#else
+      g,
+#endif
+      shared_indexes,
+
+#ifdef USE_SPATIAL_QUEUE
+      squeue,
+#ifdef USE_SPATIAL_FRONTIER
+      sfrontier,
+#endif
+#endif
+
+#ifndef USE_SPATIAL_FRONTIER
+      frontier, frontier_tails,
+#endif
+      dist);
+
 #ifdef GEM_FORGE
   m5_detail_sim_end();
   exit(0);

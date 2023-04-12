@@ -24,7 +24,11 @@ using AdjGraphT = AdjGraphSingleAdjListT;
 #define PRPushAdjFunc pageRankPushSingleAdjList
 #define PRPullAdjFunc pageRankPullSingleAdjList
 #else
+#ifdef USE_ADJ_LIST_NO_PREV
+using AdjGraphT = AdjGraphNoPrevT;
+#else
 using AdjGraphT = AdjGraph;
+#endif
 #define PRPushAdjFunc pageRankPushAdjList
 #define PRPullAdjFunc pageRankPullAdjList
 #endif

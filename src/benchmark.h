@@ -39,6 +39,8 @@ typedef AdjListGraph<NodeID> AdjGraph;
 typedef AdjListGraph<NodeID, WNode, offsetof(WNode, v), sizeof(WNode::v)>
     WAdjGraph;
 
+using AdjGraphNoPrevT = AdjListGraph<NodeID, NodeID, 0, sizeof(NodeID), 64,
+                                     false, true, AdjListTypeE::OneListPerNode>;
 using AdjGraphSingleAdjListT =
     AdjListGraph<NodeID, NodeID, 0, sizeof(NodeID), 64, false, false,
                  AdjListTypeE::SingleListPerGraph>;

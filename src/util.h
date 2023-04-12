@@ -193,4 +193,14 @@ std::vector<int> getNodePartitionSizes(const std::string &graphFn) {
   return partSizes;
 }
 
+__attribute__((noinline)) void startThreads(int num_threads) {
+  omp_set_num_threads(num_threads);
+  float v;
+  float *pv = &v;
+#pragma omp parallel for schedule(static)
+  for (int i = 0; i < num_threads; ++i) {
+    __attribute__((unused)) volatile float v = *pv;
+  }
+}
+
 #endif // UTIL_H_

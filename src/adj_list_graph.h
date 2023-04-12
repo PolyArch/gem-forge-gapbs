@@ -17,9 +17,20 @@
 
 using NumEdgeInNodeT = int64_t;
 
-template <typename EdgeT, int NumEdge, bool Bidirection, bool HasEdgeNum>
+template <
+    // Type of edge.
+    typename EdgeT,
+    // Number of edges.
+    int NumEdge,
+    // Whether this is bidirection.
+    bool Bidirection,
+    // Whether this has edge num.
+    bool HasEdgeNum,
+    // Whether this stores the offset instead of pull ptr.
+    bool UseOffsetPtr>
 struct __attribute__((packed)) AdjListNodeT {
-  using NodeT = AdjListNodeT<EdgeT, NumEdge, Bidirection, HasEdgeNum>;
+  using NodeT =
+      AdjListNodeT<EdgeT, NumEdge, Bidirection, HasEdgeNum, UseOffsetPtr>;
   NumEdgeInNodeT numEdges = 0;
   NodeT *next = nullptr;
   NodeT *prev = nullptr;
@@ -29,8 +40,9 @@ struct __attribute__((packed)) AdjListNodeT {
 };
 
 template <typename EdgeT, int NumEdge>
-struct __attribute__((packed)) AdjListNodeT<EdgeT, NumEdge, false, true> {
-  using NodeT = AdjListNodeT<EdgeT, NumEdge, false, true>;
+struct __attribute__((packed))
+AdjListNodeT<EdgeT, NumEdge, false, true, false> {
+  using NodeT = AdjListNodeT<EdgeT, NumEdge, false, true, false>;
   NumEdgeInNodeT numEdges = 0;
   NodeT *next = nullptr;
   EdgeT edges[NumEdge];
@@ -39,8 +51,19 @@ struct __attribute__((packed)) AdjListNodeT<EdgeT, NumEdge, false, true> {
 };
 
 template <typename EdgeT, int NumEdge>
-struct __attribute__((packed)) AdjListNodeT<EdgeT, NumEdge, false, false> {
-  using NodeT = AdjListNodeT<EdgeT, NumEdge, false, false>;
+struct __attribute__((packed)) AdjListNodeT<EdgeT, NumEdge, false, true, true> {
+  using NodeT = AdjListNodeT<EdgeT, NumEdge, false, true, true>;
+  NumEdgeInNodeT numEdges = 0;
+  int32_t nextOffset = 0;
+  EdgeT edges[NumEdge];
+  void setPrev(NodeT *prevNode) {}
+  void setEdgeNum(NumEdgeInNodeT numEdges) { this->numEdges = numEdges; }
+};
+
+template <typename EdgeT, int NumEdge>
+struct __attribute__((packed))
+AdjListNodeT<EdgeT, NumEdge, false, false, false> {
+  using NodeT = AdjListNodeT<EdgeT, NumEdge, false, false, false>;
   NodeT *next = nullptr;
   EdgeT edges[NumEdge];
   void setPrev(NodeT *prevNode) {}
@@ -60,6 +83,14 @@ enum AdjListTypeE {
    * the list. You need some pointer arithmetic to chase the pointer.
    */
   SingleListPerGraph = 1,
+  /**
+   * Similar to OneListPerNode, but use offset ptr.
+   */
+  OneListPerNodeWithOffsetPtr = 2,
+  /**
+   * Mixed CSR and AdjList.
+   */
+  OneListPerNodeMixCSR = 3,
 };
 
 template <
@@ -81,19 +112,33 @@ template <
     AdjListTypeE ListType = AdjListTypeE::OneListPerNode>
 class AdjListGraph {
 public:
+  using EdgeT = DestID_;
+  constexpr static AdjListTypeE ListT = ListType;
+
+  constexpr static bool IsOneListPerNode =
+      ListType == AdjListTypeE::OneListPerNode ||
+      ListType == AdjListTypeE::OneListPerNodeWithOffsetPtr ||
+      ListType == AdjListTypeE::OneListPerNodeMixCSR;
+
+  constexpr static bool IsSingleList =
+      ListType == AdjListTypeE::SingleListPerGraph;
+
+  constexpr static bool UseOffsetPtr =
+      ListType == AdjListTypeE::OneListPerNodeWithOffsetPtr;
+
+  constexpr static int NodePtrSize =
+      UseOffsetPtr ? sizeof(int32_t) : sizeof(void *);
+
   constexpr static int MetaDataSize =
-      sizeof(DestID_ *)                           // NextPtr
+      NodePtrSize                                 // NextPtr
       + (HasEdgeNum ? sizeof(NumEdgeInNodeT) : 0) // NumEdges
-      + (HasPrevPtr ? sizeof(DestID_ *) : 0)      // PrevPtr
+      + (HasPrevPtr ? NodePtrSize : 0)            // PrevPtr
       ;
   constexpr static int EdgesPerNode =
       (AdjNodeSize - MetaDataSize) / sizeof(DestID_);
 
-  using EdgeT = DestID_;
-  constexpr static AdjListTypeE ListT = ListType;
-
   using AdjListNode =
-      AdjListNodeT<DestID_, EdgesPerNode, HasPrevPtr, HasEdgeNum>;
+      AdjListNodeT<DestID_, EdgesPerNode, HasPrevPtr, HasEdgeNum, UseOffsetPtr>;
 
   constexpr static uint64_t AdjListNodeOffsetMask =
       (static_cast<uint64_t>(AdjNodeSize) - 1);
@@ -107,6 +152,11 @@ public:
     return (reinterpret_cast<uint64_t>(ptr) & AdjListNodeOffsetMask) -
            offsetof(AdjListNode, edges);
   }
+
+  /**
+   * If the degree of a node is beyond this threshold, we use AdjList.
+   */
+  constexpr static int MixCSRThreshold = 2 * EdgesPerNode;
 
   const int64_t N;
   AdjListNode **adjList = nullptr;
@@ -139,9 +189,9 @@ public:
 #endif
 
     uint64_t totalNodes;
-    if (ListType == AdjListTypeE::OneListPerNode) {
+    if (IsOneListPerNode) {
       totalNodes = this->allocateByVertex(threads, offsets, edges, properties);
-    } else if (ListType == AdjListTypeE::SingleListPerGraph) {
+    } else if (IsSingleList) {
       totalNodes = this->allocateByEdges(threads, offsets, edges, properties);
     }
     auto totalEdges = offsets[_N];
@@ -275,7 +325,7 @@ public:
 #pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
       while (cur_node) {
         auto next_node = cur_node->next;
-        sum++;
+        sum += reinterpret_cast<uint64_t>(next_node);
         cur_node = next_node;
       }
 
@@ -302,6 +352,61 @@ public:
     return edges;
   }
 
+  uint64_t estimateMixCSRHops(NodeID_ *offsets, DestID_ *edges) const {
+
+    uint64_t totalCSRHops = 0;
+
+    /**
+     * Assume the CSR edges and nodes are evenly distributed across banks.
+     */
+    const int rows = 8;
+    const int cols = 8;
+    const int banks = rows * cols;
+
+    const auto numNodes = this->N;
+    const auto numEdges = offsets[this->N];
+
+    const auto nodeIntrlv = numNodes / banks;
+    const auto edgeIntrlv = numEdges / banks;
+
+    auto getBank = [&banks](uint64_t idx, uint64_t intrlv) -> int {
+      return (idx / intrlv) % banks;
+    };
+
+    auto getHops = [&rows, &cols](int bankA, int bankB) -> int {
+      auto rowA = bankA / cols;
+      auto rowB = bankB / cols;
+      auto colA = bankA % cols;
+      auto colB = bankB % cols;
+      return std::abs(rowA - rowB) + std::abs(colA - colB);
+    };
+
+    if (ListType == AdjListTypeE::OneListPerNodeMixCSR) {
+
+      for (int64_t i = 0; i < N; ++i) {
+        auto lhs = offsets[i];
+        auto rhs = offsets[i + 1];
+        auto degree = rhs - lhs;
+
+        if (degree >= MixCSRThreshold) {
+          // This node is broken into AdjList.
+          continue;
+        }
+
+        // Estimate the CSR hops.
+        for (int j = 0; j < degree; ++j) {
+          auto edgeBank = getBank(lhs + j, edgeIntrlv);
+          auto v = edges[lhs + j];
+          auto nodeBank = getBank(v, nodeIntrlv);
+          auto hops = getHops(edgeBank, nodeBank);
+          totalCSRHops += hops;
+        }
+      }
+    }
+
+    return totalCSRHops;
+  }
+
   template <typename P>
   uint64_t allocateByVertex(int threads, NodeID_ *offsets, DestID_ *edges,
                             const P *properties) {
@@ -322,16 +427,32 @@ public:
       for (int64_t i = 0; i < N; ++i) {
         auto lhs = offsets[i];
         auto rhs = offsets[i + 1];
-        degrees[i] = rhs - lhs;
+        auto degree = rhs - lhs;
+        degrees[i] = degree;
         if (lhs == rhs) {
           adjList[i] = nullptr;
           continue;
         }
 
+        if (ListType == AdjListTypeE::OneListPerNodeMixCSR &&
+            degree < MixCSRThreshold) {
+          // Use CSR for this node.
+          adjList[i] = reinterpret_cast<AdjListNode *>(edges + lhs);
+          continue;
+        }
+
         AdjListNode *curNode = nullptr;
+
+#ifdef GEM_FORGE
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+#endif
         for (int64_t j = lhs; j < rhs; j += EdgesPerNode) {
 
           auto numEdges = std::min(rhs - j, static_cast<int64_t>(EdgesPerNode));
+
+#ifdef GEM_FORGE
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+#endif
           for (int64_t k = 0; k < numEdges; ++k) {
             // Calculate the address
             addrs[k] = properties + edges[j + k];
@@ -349,6 +470,10 @@ public:
           curNode = newNode;
 
           curNode->setEdgeNum(numEdges);
+
+#ifdef GEM_FORGE
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+#endif
           for (int64_t k = 0; k < numEdges; ++k) {
             // Push the edge.
             curNode->edges[k] = edges[j + k];
@@ -429,12 +554,18 @@ public:
       }
     }
 
-    // Set the last ptr.
-    assert(curVertex == N);
+    // Set the last ptr for the rest nodes.
+    assert(curVertex <= N);
     assert(curOffset == total_edges);
     assert(total_edges > 0);
     auto lastPtr = curNode->edges + (total_edges - 1) % EdgesPerNode + 1;
-    adjList[N] = reinterpret_cast<AdjListNode *>(lastPtr);
+#ifdef GEM_FORGE
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+#endif
+    for (auto i = curVertex; i <= N; ++i) {
+      adjList[i] = reinterpret_cast<AdjListNode *>(lastPtr);
+      degrees[i] = 0;
+    }
 
     int totalNodes = 0;
     for (auto node : allocNodes) {

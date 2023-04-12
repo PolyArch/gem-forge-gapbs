@@ -83,12 +83,16 @@ __attribute__((noinline)) void pageRankPushCSR(NodeID num_nodes,
   }
 }
 
-__attribute__((noinline)) void pageRankPushAdjList(AdjGraph &graph,
-#ifdef SHUFFLE_NODES
-                                                   NodeID *nodes,
+__attribute__((noinline)) void pageRankPushAdjList(
+#ifdef USE_ADJ_LIST_NO_PREV
+    AdjGraphNoPrevT &graph,
+#else
+    AdjGraph &graph,
 #endif
-                                                   ScoreT *scores,
-                                                   ScoreT *next_scores) {
+#ifdef SHUFFLE_NODES
+    NodeID *nodes,
+#endif
+    ScoreT *scores, ScoreT *next_scores) {
 
   auto num_nodes = graph.N;
   auto adj_list = graph.adjList;

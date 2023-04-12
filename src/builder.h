@@ -159,15 +159,37 @@ public:
   CSRGraph<NodeID_, DestID_, invert>
   SquishGraph(const CSRGraph<NodeID_, DestID_, invert> &g) {
     DestID_ **out_index, *out_neighs, **in_index, *in_neighs;
+
+#ifndef GEM_FORGE
+    printf(">>> Before SquishCSR.\n");
+    g.PrintStats();
+#endif
+
     SquishCSR(g, false, &out_index, &out_neighs);
     if (g.directed()) {
       if (invert)
         SquishCSR(g, true, &in_index, &in_neighs);
-      return CSRGraph<NodeID_, DestID_, invert>(
+
+      auto ret = CSRGraph<NodeID_, DestID_, invert>(
           g.num_nodes(), out_index, out_neighs, in_index, in_neighs);
+
+      return ret;
+
+#ifndef GEM_FORGE
+      printf(">>> After SquishCSR.\n");
+      ret.PrintStats();
+#endif
+
     } else {
-      return CSRGraph<NodeID_, DestID_, invert>(g.num_nodes(), out_index,
-                                                out_neighs);
+      auto ret = CSRGraph<NodeID_, DestID_, invert>(g.num_nodes(), out_index,
+                                                    out_neighs);
+
+#ifndef GEM_FORGE
+      printf(">>> After SquishCSR.\n");
+      ret.PrintStats();
+#endif
+
+      return ret;
     }
   }
 

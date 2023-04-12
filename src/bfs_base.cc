@@ -278,15 +278,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
     std::cout << "Warm up done.\n";
   }
 
-  {
-    omp_set_num_threads(num_threads);
-    float v;
-    float *pv = &v;
-#pragma omp parallel for schedule(static)
-    for (uint64_t i = 0; i < num_threads; ++i) {
-      __attribute__((unused)) volatile float v = *pv;
-    }
-  }
+  startThreads(num_threads);
 
   m5_reset_stats(0, 0);
 #endif

@@ -31,6 +31,9 @@ typedef float ScoreT;
 
 using AdjGraphNoPrevT =
     AdjListGraph<NodeID, NodeID, 0, sizeof(NodeID), 64, false>;
+using AdjGraphNoPrevMixT =
+    AdjListGraph<NodeID, NodeID, 0, sizeof(NodeID), 64, false, true,
+                 AdjListTypeE::OneListPerNodeMixCSR>;
 using AdjGraphNoPrevNoNumEdgeT =
     AdjListGraph<NodeID, NodeID, 0, sizeof(NodeID), 64, false, false>;
 
@@ -123,7 +126,12 @@ void BuildImpl(int num_threads, int64_t num_nodes, NodeID *neigh_index_offset,
 
 #ifndef GEM_FORGE
   adjBuildTimer.Stop();
-  printf("AdjListGraph built %10.5lfs.\n", adjBuildTimer.Seconds());
+
+  auto mixCSRHops = adjGraph.estimateMixCSRHops(neigh_index_offset, edges);
+
+  printf("AdjListGraph built %10.5lfs MixCSRHops %lu.\n",
+         adjBuildTimer.Seconds(), mixCSRHops);
+
 #else
   printf("AdjListGraph built.\n");
 #endif // GEM_FORGE
@@ -176,6 +184,13 @@ void BuildAdjGraph(const GraphT &g, int warm_cache = 2, int num_threads = 1) {
   clear_affinity_alloc();
   BuildImpl<AdjGraphSingleAdjListT>(num_threads, num_nodes, neigh_index_offset,
                                     edges, props_ptr);
+  print_affinity_alloc_stats();
+
+  printf(">>>>>>>>>>>>>>>>>>> Testing AdjListGraphMixCSR with 16B MetaData "
+         "(NoPrevPtr).\n");
+  clear_affinity_alloc();
+  BuildImpl<AdjGraphNoPrevMixT>(num_threads, num_nodes, neigh_index_offset,
+                                edges, props_ptr);
   print_affinity_alloc_stats();
 }
 

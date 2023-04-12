@@ -5,6 +5,31 @@ import os
 import argparse
 import random
 
+def scan_vertex(fn):
+    min_vertex = -1
+    max_vertex = 0
+    unique_vertex = set()
+    unique_edge = set()
+    with open(fn) as f:
+        for line in f:
+            if line.startswith('#') or line.startswith('%'):
+                continue
+            fields = line.split()
+            src = int(fields[0])
+            dst = int(fields[1])
+            unique_vertex.add(src)
+            unique_vertex.add(dst)
+            unique_edge.add((src, dst))
+            if min_vertex == -1:
+                min_vertex = min(src, dst)
+            else:
+                min_vertex = min(min_vertex, src, dst)
+            max_vertex = max(max_vertex, src, dst)
+
+    print(f'min = {min_vertex} max = {max_vertex} unique vertex = {len(unique_vertex)} unique edge = {len(unique_edge)}')
+    return min_vertex, max_vertex
+
+
 def read_edge_list_as_adjlist(fn):
     adjlist = list()
     edge_properties = list()
@@ -25,7 +50,7 @@ def read_edge_list_as_adjlist(fn):
             else:
                 min_vertex = min(min_vertex, src, dst)
             max_vertex = max(max_vertex, src, dst)
-            while len(adjlist) <= src:
+            while len(adjlist) <= max_vertex:
                 adjlist.append(list())
             adjlist[src].append(dst)
     print(f'min = {min_vertex} max = {max_vertex} {len(adjlist)}')
@@ -95,6 +120,8 @@ def analyze_partition(adjlist, parts, out_fn):
             external_edges = 0
             for u in adjlist[v]:
                 edges += 1
+                if u < 0 or u >= len(parts):
+                    print(f'Illegal u {u} Parts {len(parts)}')
                 u_pid = parts[u]
                 if u_pid != v_pid:
                     external_edges += 1
@@ -132,6 +159,18 @@ def dump_adjlist(adjlist, prefix, symmetry):
         os.system(f'./converter -f {el_fn} -b {prefix}')
         os.system(f'./converter -f {el_fn} -b {prefix} -w')
 
+def dump_edge_list(fn, edges, edge_properties):
+    with open(fn, 'w') as f:
+        if edge_properties:
+            assert(len(edge_properties) == len(edges))
+            sorted_edges = sorted(zip(edges, edge_properties))
+            for (u, v), prop in zorted_edges:
+                f.write(f'{u} {v} {prop}\n')
+        else:
+            sorted_edges = sorted(edges)
+            for u, v in sorted_edges:
+                f.write(f'{u} {v}\n')
+
 def dump_partition(original_fn,
     n_parts,
     adjlist,
@@ -160,8 +199,6 @@ def dump_partition(original_fn,
     for u in range(len(adjlist)):
         reordered_u = reorder_map[u]
         for v in adjlist[u]:
-            if u == 85195:
-                print(f'({u}, {v})')
             reordered_v = reorder_map[v]
             reordered_edge_list.append((reordered_u, reordered_v))
             if edge_property_map:
@@ -171,16 +208,13 @@ def dump_partition(original_fn,
     fn = f'{prefix}-{part_method}{n_parts}'
     if is_weight:
         el_fn = f'{prefix}-{part_method}{n_parts}.wel'
+        el_backup_fn = f'{prefix}-{part_method}{n_parts}.backup.wel'
     else:
         el_fn = f'{prefix}-{part_method}{n_parts}.el'
-    with open(el_fn, 'w') as f:
-        if reordered_edge_properties:
-            assert(len(reordered_edge_properties) == len(reordered_edge_list))
-            for (reordered_u, reordered_v), reordered_prop in zip(reordered_edge_list, reordered_edge_properties):
-                f.write(f'{reordered_u} {reordered_v} {reordered_prop}\n')
-        else:
-            for reordered_u, reordered_v in reordered_edge_list:
-                f.write(f'{reordered_u} {reordered_v}\n')
+        el_backup_fn = f'{prefix}-{part_method}{n_parts}.backup.el'
+
+    dump_edge_list(el_fn, reordered_edge_list, reordered_edge_properties)
+    dump_edge_list(el_backup_fn, reordered_edge_list, reordered_edge_properties)
 
     original_src_fn = f'{prefix}.src.txt'
     try:
