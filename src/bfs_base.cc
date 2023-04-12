@@ -54,12 +54,15 @@ USE_SPATIAL_QUEUE: Use a spatially localized queue instead of default thread
 #ifdef USE_ADJ_LIST_SINGLE_LIST
 using AdjGraphT = AdjGraphSingleAdjListT;
 #define BFSPushFunc bfsPushSingleAdjList
+#define BFSPullFunc bfsPullSingleAdjList
 #else
 using AdjGraphT = AdjGraph;
 #define BFSPushFunc bfsPushAdjList
+#define BFSPullFunc bfsPullAdjList
 #endif
 #else
 #define BFSPushFunc bfsPushCSR
+#define BFSPullFunc bfsPullCSR
 #endif
 
 using namespace std;
@@ -347,7 +350,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 #else
 
 #ifdef USE_ADJ_LIST
-    awake_count = bfsPullAdjList(adjGraph, parent.data(), next_parent.data());
+    awake_count = BFSPullFunc(adjGraph, parent.data(), next_parent.data());
 #else
     awake_count = bfsPullCSR(g, parent.data(), next_parent.data());
 #endif

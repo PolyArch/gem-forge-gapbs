@@ -854,4 +854,104 @@ bfsPullAdjList(const AdjGraph &g, NodeID *parent, NodeID *next_parent) {
   return awake_count;
 }
 
+__attribute__((noinline)) int64_t
+bfsPullSingleAdjList(const AdjGraphSingleAdjListT &g, NodeID *parent,
+                     NodeID *next_parent) {
+
+  auto num_nodes = g.N;
+  auto adj_list = g.adjList;
+
+  int64_t awake_count = 0;
+
+#pragma omp parallel for schedule(static) reduction(+ : awake_count) \
+  firstprivate(adj_list, parent, next_parent)
+  for (NodeID u = 0; u < num_nodes; u++) {
+
+#pragma ss stream_name "gap.bfs_pull.parent.ld"
+    NodeID p = parent[u];
+
+    auto adj_ptr = adj_list + u;
+
+#pragma ss stream_name "gap.bfs_pull.adj.lhs.ld"
+    auto *lhs = reinterpret_cast<NodeID *>(adj_ptr[0]);
+
+#pragma ss stream_name "gap.bfs_pull.adj.rhs.ld"
+    auto *rhs = reinterpret_cast<NodeID *>(adj_ptr[1]);
+
+    auto *rhs_node = AdjGraphSingleAdjListT::getNodePtr(rhs);
+    auto rhs_offset = AdjGraphSingleAdjListT::getNodeOffset(rhs);
+
+    // This helps nest the inner loop.
+    auto needProcess = p < 0 && lhs != rhs;
+    if (needProcess) {
+
+      // Better to reduce from zero.
+      NodeID np = 0;
+      while (true) {
+
+        auto *lhs_node = AdjGraphSingleAdjListT::getNodePtr(lhs);
+        const auto local_rhs =
+            lhs_node != rhs_node
+                ? (lhs_node->edges + AdjGraphSingleAdjListT::EdgesPerNode)
+                : rhs;
+        const auto numEdges = local_rhs - lhs;
+
+        int64_t i = 0;
+        NodeID local_np = 0;
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+        do {
+
+#pragma ss stream_name "gap.bfs_pull.v.ld"
+          NodeID v = lhs_node->edges[i];
+
+#pragma ss stream_name "gap.bfs_pull.v_parent.ld"
+          NodeID v_parent = parent[v];
+
+          local_np = (v_parent > InitParentId) ? (v + 1) : local_np;
+
+          i++;
+
+          /**
+           * Do not break not in this loop level, as num_edges is very small.
+           * LoopBound will actually cause the stream trying to do more work
+           * as it goes beyond num_edges.
+           * Ideally the LoopBound in stream should be enhanced with an upper
+           * bound, i.e. num_edges here.
+           */
+        } while (i < numEdges);
+
+        np = (local_np != 0) ? local_np : np;
+
+#pragma ss stream_name "gap.bfs_pull.next_node.ld"
+        auto next_node = lhs_node->next;
+
+        lhs = next_node->edges;
+
+        /**
+         * I need to write this werid loop break condition to to distinguish
+         * lhs and next_lhs for LoopBound.
+         * TODO: Fix this in the compiler.
+         */
+        bool rhs_zero = next_node == rhs_node && rhs_offset == 0;
+
+#ifdef NO_EARLY_BREAK
+        bool broken = rhs_zero || (lhs_node == rhs_node);
+#else
+        bool broken = rhs_zero || (lhs_node == rhs_node) || local_np > 0;
+#endif
+        if (broken) {
+          break;
+        }
+      }
+
+      if (np != 0) {
+        next_parent[u] = np - 1;
+        awake_count++;
+      }
+    }
+  }
+
+  return awake_count;
+}
+
 #endif
