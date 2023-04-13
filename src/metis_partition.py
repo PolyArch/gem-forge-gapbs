@@ -164,7 +164,7 @@ def dump_edge_list(fn, edges, edge_properties):
         if edge_properties:
             assert(len(edge_properties) == len(edges))
             sorted_edges = sorted(zip(edges, edge_properties))
-            for (u, v), prop in zorted_edges:
+            for (u, v), prop in sorted_edges:
                 f.write(f'{u} {v} {prop}\n')
         else:
             sorted_edges = sorted(edges)

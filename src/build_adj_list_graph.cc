@@ -132,6 +132,8 @@ void BuildImpl(int num_threads, int64_t num_nodes, NodeID *neigh_index_offset,
   printf("AdjListGraph built %10.5lfs MixCSRHops %lu.\n",
          adjBuildTimer.Seconds(), mixCSRHops);
 
+  exit(0);
+
 #else
   printf("AdjListGraph built.\n");
 #endif // GEM_FORGE
@@ -160,38 +162,38 @@ void BuildAdjGraph(const GraphT &g, int warm_cache = 2, int num_threads = 1) {
   // Do a remap first.
   m5_stream_nuca_remap();
 
-  printf(">>>>>>>>>>>>>>>>>>> Testing AdjListGraph with 24B MetaData.\n");
-  clear_affinity_alloc();
-  BuildImpl<AdjGraphT>(num_threads, num_nodes, neigh_index_offset, edges,
-                       props_ptr);
-  print_affinity_alloc_stats();
+  // printf(">>>>>>>>>>>>>>>>>>> Testing AdjListGraph with 24B MetaData.\n");
+  // clear_affinity_alloc();
+  // BuildImpl<AdjGraphT>(num_threads, num_nodes, neigh_index_offset, edges,
+  //                      props_ptr);
+  // print_affinity_alloc_stats();
 
-  printf(">>>>>>>>>>>>>>>>>>> Testing AdjListGraph with 16B MetaData "
-         "(NoPrevPtr).\n");
-  clear_affinity_alloc();
-  BuildImpl<AdjGraphNoPrevT>(num_threads, num_nodes, neigh_index_offset, edges,
-                             props_ptr);
-  print_affinity_alloc_stats();
+  // printf(">>>>>>>>>>>>>>>>>>> Testing AdjListGraph with 16B MetaData "
+  //        "(NoPrevPtr).\n");
+  // clear_affinity_alloc();
+  // BuildImpl<AdjGraphNoPrevT>(num_threads, num_nodes, neigh_index_offset, edges,
+  //                            props_ptr);
+  // print_affinity_alloc_stats();
 
-  printf(">>>>>>>>>>>>>>>>>>> Testing AdjListGraph with 8B MetaData "
-         "(NoPrevPtr NoNumEdge).\n");
-  clear_affinity_alloc();
-  BuildImpl<AdjGraphNoPrevNoNumEdgeT>(num_threads, num_nodes,
-                                      neigh_index_offset, edges, props_ptr);
-  print_affinity_alloc_stats();
+  // printf(">>>>>>>>>>>>>>>>>>> Testing AdjListGraph with 8B MetaData "
+  //        "(NoPrevPtr NoNumEdge).\n");
+  // clear_affinity_alloc();
+  // BuildImpl<AdjGraphNoPrevNoNumEdgeT>(num_threads, num_nodes,
+  //                                     neigh_index_offset, edges, props_ptr);
+  // print_affinity_alloc_stats();
 
   printf(">>>>>>>>>>>>>>>>>>> Testing AdjListGraph with SingleAdjList\n");
-  clear_affinity_alloc();
+  // clear_affinity_alloc();
   BuildImpl<AdjGraphSingleAdjListT>(num_threads, num_nodes, neigh_index_offset,
                                     edges, props_ptr);
-  print_affinity_alloc_stats();
+  // print_affinity_alloc_stats();
 
-  printf(">>>>>>>>>>>>>>>>>>> Testing AdjListGraphMixCSR with 16B MetaData "
-         "(NoPrevPtr).\n");
-  clear_affinity_alloc();
-  BuildImpl<AdjGraphNoPrevMixT>(num_threads, num_nodes, neigh_index_offset,
-                                edges, props_ptr);
-  print_affinity_alloc_stats();
+  // printf(">>>>>>>>>>>>>>>>>>> Testing AdjListGraphMixCSR with 16B MetaData "
+  //        "(NoPrevPtr).\n");
+  // clear_affinity_alloc();
+  // BuildImpl<AdjGraphNoPrevMixT>(num_threads, num_nodes, neigh_index_offset,
+  //                               edges, props_ptr);
+  // print_affinity_alloc_stats();
 }
 
 int main(int argc, char *argv[]) {
@@ -210,7 +212,7 @@ int main(int argc, char *argv[]) {
   BuilderT b(cli);
   GraphT g = b.MakeGraph();
 
-  AnalyzerStorageOverhead(g);
+  // AnalyzerStorageOverhead(g);
 
   BuildAdjGraph(g, cli.warm_cache(), cli.num_threads());
   return 0;

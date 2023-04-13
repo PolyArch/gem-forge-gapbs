@@ -87,25 +87,26 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 
   const int num_banks = 64;
   const auto num_nodes = g.num_nodes();
-  const auto num_nodes_per_bank = roundUpPow2(num_nodes / num_banks);
+  const auto num_nodes_per_bank =
+      roundUp(num_nodes / num_banks, 128 / sizeof(NodeID));
 
 #ifdef USE_SPATIAL_QUEUE
   const auto node_hash_mask = num_banks - 1;
-  const auto node_hash_shift = log2Pow2(num_nodes_per_bank);
+  const auto node_hash_div = num_nodes_per_bank;
   SpatialQueue<NodeID> squeue(num_banks, 1 /* num_bins */, num_nodes_per_bank,
-                              node_hash_shift, node_hash_mask);
+                              node_hash_div, node_hash_mask);
 #endif
 
 #ifdef USE_SPATIAL_FRONTIER
   // Another queue for frontier.
   SpatialQueue<NodeID> squeue2(num_banks, 1 /* num_bins */, num_nodes_per_bank,
-                               node_hash_shift, node_hash_mask);
+                               node_hash_div, node_hash_mask);
   squeue2.enque(source, 0);
   {
     auto queue_idx = squeue2.getQueueIdx(source);
     printf("Source mask %d shift %d nodes_per_bank %d %d %d %d %d.\n",
-           node_hash_mask, node_hash_shift, num_nodes_per_bank, source,
-           queue_idx, squeue2.size(0, 0), squeue2.size(queue_idx, 0));
+           node_hash_mask, node_hash_div, num_nodes_per_bank, source, queue_idx,
+           squeue2.size(0, 0), squeue2.size(queue_idx, 0));
   }
 #else
   SlidingQueue<NodeID> queue(g.num_nodes());

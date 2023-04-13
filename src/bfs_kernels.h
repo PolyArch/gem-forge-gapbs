@@ -53,14 +53,14 @@ __attribute__((noinline)) void bfsPushCSR(
   const auto squeue_data = squeue.data;
   const auto squeue_meta = squeue.meta;
   const auto squeue_capacity = squeue.queue_capacity;
-  const auto squeue_hash_shift = squeue.hash_shift;
+  const auto squeue_hash_div = squeue.hash_div;
   const auto squeue_hash_mask = squeue.hash_mask;
 
   PushPrivObj
 #undef PRIV_OBJ_LIST
 #define PRIV_OBJ_LIST                                                          \
   PopPrivObj PRIV_OBJ_LIST, squeue_data, squeue_meta, squeue_capacity,         \
-      squeue_hash_shift, squeue_hash_mask
+      squeue_hash_div, squeue_hash_mask
       ;
 #endif
 
@@ -182,7 +182,7 @@ __attribute__((noinline)) void bfsPushCSR(
             /**
              * Hash into the spatial queue.
              */
-            auto queue_idx = (v >> squeue_hash_shift) & squeue_hash_mask;
+            auto queue_idx = (v / squeue_hash_div) & squeue_hash_mask;
 
 #pragma ss stream_name "gap.bfs_push.enque.at"
             auto queue_loc = __atomic_fetch_add(&squeue_meta[queue_idx].size[0],
@@ -265,14 +265,14 @@ __attribute__((noinline)) void bfsPushAdjList(
   const auto squeue_data = squeue.data;
   const auto squeue_meta = squeue.meta;
   const auto squeue_capacity = squeue.queue_capacity;
-  const auto squeue_hash_shift = squeue.hash_shift;
+  const auto squeue_hash_div = squeue.hash_div;
   const auto squeue_hash_mask = squeue.hash_mask;
 
   PushPrivObj
 #undef PRIV_OBJ_LIST
 #define PRIV_OBJ_LIST                                                          \
   PopPrivObj PRIV_OBJ_LIST, squeue_data, squeue_meta, squeue_capacity,         \
-      squeue_hash_shift, squeue_hash_mask
+      squeue_hash_div, squeue_hash_mask
       ;
 #endif
 
@@ -382,7 +382,7 @@ __attribute__((noinline)) void bfsPushAdjList(
               /**
                * Hash into the spatial queue.
                */
-              auto queue_idx = (v >> squeue_hash_shift) & squeue_hash_mask;
+              auto queue_idx = (v / squeue_hash_div) & squeue_hash_mask;
 
 #pragma ss stream_name "gap.bfs_push.enque.at"
               auto queue_loc = __atomic_fetch_add(
@@ -475,14 +475,14 @@ __attribute__((noinline)) void bfsPushSingleAdjList(
   const auto squeue_data = squeue.data;
   const auto squeue_meta = squeue.meta;
   const auto squeue_capacity = squeue.queue_capacity;
-  const auto squeue_hash_shift = squeue.hash_shift;
+  const auto squeue_hash_div = squeue.hash_div;
   const auto squeue_hash_mask = squeue.hash_mask;
 
   PushPrivObj
 #undef PRIV_OBJ_LIST
 #define PRIV_OBJ_LIST                                                          \
   PopPrivObj PRIV_OBJ_LIST, squeue_data, squeue_meta, squeue_capacity,         \
-      squeue_hash_shift, squeue_hash_mask
+      squeue_hash_div, squeue_hash_mask
       ;
 #endif
 
@@ -606,7 +606,7 @@ __attribute__((noinline)) void bfsPushSingleAdjList(
                 /**
                  * Hash into the spatial queue.
                  */
-                auto queue_idx = (v >> squeue_hash_shift) & squeue_hash_mask;
+                auto queue_idx = (v / squeue_hash_div) & squeue_hash_mask;
 
 #pragma ss stream_name "gap.bfs_push.enque.at"
                 auto queue_loc = __atomic_fetch_add(

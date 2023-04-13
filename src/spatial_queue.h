@@ -20,10 +20,10 @@ public:
   };
 
   SpatialQueue(int _num_queues, int _num_bins, int _queue_capacity,
-               int _hash_shift, int _hash_mask)
+               int _hash_div, int _hash_mask)
       : num_queues(_num_queues), num_bins(_num_bins),
         queue_capacity(_queue_capacity),
-        bin_capacity(_queue_capacity / _num_bins), hash_shift(_hash_shift),
+        bin_capacity(_queue_capacity / _num_bins), hash_div(_hash_div),
         hash_mask(_hash_mask) {
 
     this->data = alignedAllocAndTouch<T>(num_queues * queue_capacity);
@@ -66,7 +66,7 @@ public:
     return true;
   }
 
-  int getQueueIdx(T v) const { return (v >> hash_shift) & hash_mask; }
+  int getQueueIdx(T v) const { return (v / hash_div) & hash_mask; }
   void enque(T v, int bin_idx) {
     auto queue_idx = getQueueIdx(v);
     auto loc = this->meta[queue_idx].size[bin_idx]++;
@@ -78,7 +78,7 @@ public:
   const int queue_capacity;
   const int bin_capacity;
 
-  const int hash_shift;
+  const int hash_div;
   const int hash_mask;
 
   T *data;

@@ -283,7 +283,7 @@ __attribute__((noinline)) void DeltaStepImpl(
     const auto squeue_meta = squeue.meta;
     const auto squeue_queue_capacity = squeue.queue_capacity;
     const auto squeue_bin_capacity = squeue.bin_capacity;
-    const auto squeue_hash_shift = squeue.hash_shift;
+    const auto squeue_hash_div = squeue.hash_div;
     const auto squeue_hash_mask = squeue.hash_mask;
 
 #ifdef USE_SPATIAL_FRONTIER
@@ -490,7 +490,7 @@ __attribute__((noinline)) void DeltaStepImpl(
                   /**
                    * Hash into the spatial queue and bin within each queue.
                    */
-                  auto queue_idx = (v >> squeue_hash_shift) & squeue_hash_mask;
+                  auto queue_idx = (v / squeue_hash_div) & squeue_hash_mask;
                   auto bin_idx = new_dist / kDelta;
 
 #ifndef GEM_FORGE
@@ -689,24 +689,25 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
   dist[source] = 0;
 
   const int num_banks = 64;
-  const auto num_nodes_per_bank = roundUpPow2(num_nodes / num_banks);
+  const auto num_nodes_per_bank =
+      roundUp(num_nodes / num_banks, 128 / sizeof(NodeID));
 
 #ifdef USE_SPATIAL_QUEUE
   /**
    * We have a spatial queue for each bank, and with bins.
    */
   const auto node_hash_mask = num_banks - 1;
-  const auto node_hash_shift = log2Pow2(num_nodes_per_bank);
+  const auto node_hash_div = num_nodes_per_bank;
   SpatialQueue<NodeID> squeue(num_banks, kMaxNumBin,
                               num_nodes_per_bank * kMaxNumBin * kDelta,
-                              node_hash_shift, node_hash_mask);
+                              node_hash_div, node_hash_mask);
 
 #ifdef USE_SPATIAL_FRONTIER
   /**
    * We also have a spatial queue for the frontier.
    */
   SpatialQueue<NodeID> sfrontier(num_banks, 1 /* nBins */,
-                                 num_nodes_per_bank * kDelta, node_hash_shift,
+                                 num_nodes_per_bank * kDelta, node_hash_div,
                                  node_hash_mask);
   sfrontier.enque(source, 0 /* binIdx */);
 

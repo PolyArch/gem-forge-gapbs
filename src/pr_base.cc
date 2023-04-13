@@ -122,9 +122,9 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
     g.setStreamNUCAPartition(scores_data1, g.node_parts);
     g.setStreamNUCAPartition(out_edges, g.out_edge_parts);
   } else {
-    m5_stream_nuca_set_property(scores_data1,
-                                STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-                                roundUp(num_nodes / 64, 64) * sizeof(ScoreT));
+    m5_stream_nuca_set_property(
+        scores_data1, STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+        roundUp(num_nodes / 64, 128 / sizeof(NodeID)) * sizeof(ScoreT));
     m5_stream_nuca_align(out_edges, scores_data1,
                          m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
     m5_stream_nuca_align(out_edges, out_neigh_index,
