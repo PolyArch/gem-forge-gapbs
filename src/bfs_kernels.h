@@ -583,7 +583,7 @@ __attribute__((noinline)) void bfsPushSingleAdjList(
             while (true) {
 
 #pragma ss stream_name "gap.bfs_push.adj.out_v.ld"
-              NodeID v = lhs_node->edges[j];
+              NodeID v = lhs[j];
 
               /**************************************************************************
                * Perform atomic swap.
@@ -902,7 +902,7 @@ bfsPullSingleAdjList(const AdjGraphSingleAdjListT &g, NodeID *parent,
         do {
 
 #pragma ss stream_name "gap.bfs_pull.v.ld"
-          NodeID v = lhs_node->edges[i];
+          NodeID v = lhs[i];
 
 #pragma ss stream_name "gap.bfs_pull.v_parent.ld"
           NodeID v_parent = parent[v];

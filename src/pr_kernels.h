@@ -218,7 +218,7 @@ pageRankPushSingleAdjList(AdjGraphSingleAdjListT &graph,
         while (true) {
 
 #pragma ss stream_name "gap.pr_push.adj.out_v.ld"
-          NodeID v = lhs_node->edges[j];
+          NodeID v = lhs[j];
 
 #pragma ss stream_name "gap.pr_push.adj.score.at"
           __atomic_fetch_fadd(next_scores + v, outgoing_contrib,
@@ -524,7 +524,7 @@ pageRankPullSingleAdjList(AdjGraphSingleAdjListT &graph,
         while (true) {
 
 #pragma ss stream_name "gap.pr_pull.rdc.v.ld"
-          NodeID v = lhs_node->edges[j];
+          NodeID v = lhs[j];
 
 #pragma ss stream_name "gap.pr_pull.rdc.contrib.ld"
           ScoreT contrib = out_contribs[v];

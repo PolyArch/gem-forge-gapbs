@@ -44,6 +44,9 @@ using AdjGraphNoPrevT = AdjListGraph<NodeID, NodeID, 0, sizeof(NodeID), 64,
 using AdjGraphSingleAdjListT =
     AdjListGraph<NodeID, NodeID, 0, sizeof(NodeID), 64, false, false,
                  AdjListTypeE::SingleListPerGraph>;
+using WAdjGraphSingleAdjListT =
+    AdjListGraph<NodeID, WNode, offsetof(WNode, v), sizeof(WNode::v), 64, false,
+                 false, AdjListTypeE::SingleListPerGraph>;
 
 typedef BuilderBase<NodeID, NodeID, WeightT> Builder;
 typedef BuilderBase<NodeID, WNode, WeightT> WeightedBuilder;

@@ -113,6 +113,14 @@ using BinT = SizedArray<NodeID>;
 #define EdgeIndexT WNode *
 #endif // USE_EDGE_INDEX_OFFSET
 
+#ifdef USE_ADJ_LIST
+#ifdef USE_ADJ_LIST_SINGLE_LIST
+#define WAdjGraphT WAdjGraphSingleAdjListT
+#else
+#define WAdjGraphT WAdjGraph
+#endif
+#endif
+
 __attribute__((noinline)) void findMinBin(BinIndexT curr_bin_index,
                                           BinIndexT &next_bin_index,
                                           std::vector<BinT> &local_bins) {
@@ -228,7 +236,7 @@ copySpatialQueueToSpatialFrontier(SpatialQueue<NodeID> &squeue,
 __attribute__((noinline)) void DeltaStepImpl(
 
 #ifdef USE_ADJ_LIST
-    WAdjGraph &adjGraph,
+    WAdjGraphT &adjGraph,
 #else
     const WGraph &g,
 #endif
@@ -246,7 +254,7 @@ __attribute__((noinline)) void DeltaStepImpl(
     pvector<NodeID> &frontier, size_t *frontier_tails,
 #endif
 
-    pvector<WeightT> &dist
+    Timer &t, pvector<WeightT> &dist
 
 ) {
 
@@ -325,7 +333,7 @@ __attribute__((noinline)) void DeltaStepImpl(
 
 #pragma omp for schedule(static) nowait
       for (size_t i = 0; i < frontier_size; i++) {
-#endif
+#endif // USE_SPATIAL_FRONTIER
 
 #pragma ss stream_name "gap.sssp.frontier.ld"
           NodeID u = frontier_data[i];
@@ -333,16 +341,47 @@ __attribute__((noinline)) void DeltaStepImpl(
 #pragma ss stream_name "gap.sssp.dist.ld"
           WeightT u_dist = dist_data[u];
 
+#ifndef GEM_FORGE
+          if (iter < 2) {
+            printf("Iter %zu Process %d Dist %d.\n", iter, u, u_dist);
+          }
+#endif
+
+          /**************************************************************************
+           * Get the out edge list. Either AdjList or CSR edge list.
+           **************************************************************************/
+
 #ifdef USE_ADJ_LIST
 
+          auto adj_ptr = adj_list + u;
+
+#ifdef USE_ADJ_LIST_SINGLE_LIST
+
+#pragma ss stream_name "gap.sssp.adj.lhs.ld"
+          auto *lhs = reinterpret_cast<WAdjGraphT::EdgeT *>(adj_ptr[0]);
+
+#pragma ss stream_name "gap.sssp.adj.rhs.ld"
+          auto *rhs = reinterpret_cast<WAdjGraphT::EdgeT *>(adj_ptr[1]);
+
+          auto *rhs_node = WAdjGraphT::getNodePtr(rhs);
+          auto rhs_offset = WAdjGraphT::getNodeOffset(rhs);
+
+          bool need_process = lhs != rhs && u_dist >= curr_bin_weight;
+
+#else
+
 #pragma ss stream_name "gap.sssp.adj.node.ld"
-          auto *cur_node = adj_list[u];
+          auto *cur_node = adj_ptr[0];
+
+          bool need_process = cur_node != nullptr && u_dist >= curr_bin_weight;
+
+#endif // USE_ADJ_LIST_SINGLE_LIST
 
           /**
            * I need to fuse them into a single condition check with
            * do while loop below so that BBPredDataGraph can handle it.
            */
-          if (cur_node != nullptr && u_dist >= curr_bin_weight) {
+          if (need_process) {
 
 #else
 
@@ -370,18 +409,46 @@ __attribute__((noinline)) void DeltaStepImpl(
             local_processed_vertexes++;
 #endif
 
+            /**************************************************************************
+             * Middle loop level for the pointer chasing.
+             **************************************************************************/
+
 #ifdef USE_ADJ_LIST
 
 #pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
-            do {
+            while (true) {
+
+#ifdef USE_ADJ_LIST_SINGLE_LIST
+
+              auto *cur_node = WAdjGraphT::getNodePtr(lhs);
+              const auto local_rhs =
+                  cur_node != rhs_node
+                      ? (cur_node->edges + WAdjGraphT::EdgesPerNode)
+                      : rhs;
+              const auto numEdges = local_rhs - lhs;
+
+              int64_t j = 0;
+
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+              while (true) {
+
+                const WNode &wn = lhs[j];
+
+#else
 
 #pragma ss stream_name "gap.sssp.adj.n_edges.ld"
               const auto numEdges = cur_node->numEdges;
 
+              int64_t j = 0;
+
+              // It is guranteed that numEdges > 0.
 #pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
-              for (int64_t j = 0; j < numEdges; ++j) {
+              while (true) {
 
                 const WNode &wn = cur_node->edges[j];
+
+#endif // USE_ADJ_LIST_SINGLE_LIST
+
 #else
 
           /**
@@ -393,6 +460,10 @@ __attribute__((noinline)) void DeltaStepImpl(
             const WNode &wn = out_ptr[i];
 
 #endif // USE_ADJ_LIST
+
+                /**************************************************************************
+                 * Inner loop level for atomic operation.
+                 **************************************************************************/
 
 #pragma ss stream_name "gap.sssp.out_w.ld"
                 const WeightT weight = wn.w;
@@ -407,6 +478,13 @@ __attribute__((noinline)) void DeltaStepImpl(
                                                       __ATOMIC_RELAXED);
 
                 if (old_dist > new_dist) {
+
+#ifndef GEM_FORGE
+                  if (iter < 2) {
+                    printf("Iter %zu Relax %d %d -> %d.\n", iter, v, old_dist,
+                           new_dist);
+                  }
+#endif
 
 #ifdef USE_SPATIAL_QUEUE
                   /**
@@ -437,15 +515,50 @@ __attribute__((noinline)) void DeltaStepImpl(
 #endif // USE_SPATIAL_QUEUE
 
                 } // old_dist > new_dist
-              }   // Out vertex.
 
 #ifdef USE_ADJ_LIST
+                j++;
+                if (j == numEdges) {
+                  break;
+                }
+#endif
+              } // Out vertex.
+
+#ifdef USE_ADJ_LIST
+
+              /**************************************************************************
+               * Advance the middle loop level.
+               **************************************************************************/
+
 #pragma ss stream_name "gap.sssp.adj.next_node.ld"
               auto next_node = cur_node->next;
 
+#ifdef USE_ADJ_LIST_SINGLE_LIST
+
+              lhs = next_node->edges;
+
+              /**
+               * I need to write this werid loop break condition to to
+               * distinguish lhs and next_lhs for LoopBound.
+               * TODO: Fix this in the compiler.
+               */
+              bool rhs_zero = next_node == rhs_node && rhs_offset == 0;
+              bool should_break = rhs_zero || (cur_node == rhs_node);
+
+#else
+
               cur_node = next_node;
-            } while (cur_node);
-#endif
+
+              bool should_break = cur_node == nullptr;
+
+#endif // USE_ADJ_LIST_SINGLE_LIST
+
+              if (should_break) {
+                break;
+              }
+            }
+
+#endif      // USE_ADJ_LIST
           } // u_dist > cur_bin_dist.
         }
 
@@ -563,12 +676,13 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
 #endif
 
 #ifdef USE_EDGE_INDEX_OFFSET
-  EdgeIndexT *out_neigh_index = g.out_neigh_index_offset();
+  EdgeIndexT *__attribute__((unused)) out_neigh_index =
+      g.out_neigh_index_offset();
 #else
-  EdgeIndexT *out_neigh_index = g.out_neigh_index();
+  EdgeIndexT *__attribute__((unused)) out_neigh_index = g.out_neigh_index();
 #endif // USE_EDGE_INDEX_OFFSET
-  WNode *out_edges = g.out_edges();
-  auto num_edges = g.num_edges_directed();
+  WNode *__attribute__((unused)) out_edges = g.out_edges();
+  auto __attribute__((unused)) num_edges = g.num_edges_directed();
 
   auto num_nodes = g.num_nodes();
   pvector<WeightT> dist(g.num_nodes(), kDistInf);
@@ -656,14 +770,14 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
 #endif // GEM_FORGE
 
 #ifdef USE_ADJ_LIST
-  printf("Start to build AdjListGraph, node %luB.\n",
-         sizeof(WAdjGraph::AdjListNode));
+  printf("Start to build AdjListGraph, node %luB, edges/node %d.\n",
+         sizeof(WAdjGraphT::AdjListNode), WAdjGraphT::EdgesPerNode);
 #ifndef GEM_FORGE
   Timer adjBuildTimer;
   adjBuildTimer.Start();
 #endif // GEM_FORGE
-  WAdjGraph adjGraph(num_threads, g.num_nodes(), g.out_neigh_index_offset(),
-                     g.out_edges(), dist.data());
+  WAdjGraphT adjGraph(num_threads, g.num_nodes(), g.out_neigh_index_offset(),
+                      g.out_edges(), dist.data());
 #ifndef GEM_FORGE
   adjBuildTimer.Stop();
   printf("AdjListGraph built %10.5lfs.\n", adjBuildTimer.Seconds());
@@ -721,7 +835,7 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
 #ifndef USE_SPATIAL_FRONTIER
       frontier, frontier_tails,
 #endif
-      dist);
+      t, dist);
 
 #ifdef GEM_FORGE
   m5_detail_sim_end();
