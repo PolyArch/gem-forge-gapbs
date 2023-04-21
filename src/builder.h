@@ -249,8 +249,11 @@ public:
         if ((r.GetSuffix() == ".sg") || (r.GetSuffix() == ".wsg")) {
           auto ret = r.ReadSerializedGraph();
           // Partition only works for serialized graph.
-          if (cli_.graph_partition()) {
-            auto node_part_sizes = getNodePartitionSizes(cli_.filename());
+          auto node_part_sizes = getNodePartitionSizes(cli_.filename());
+          if (node_part_sizes.empty()) {
+            // Failed to get partition.
+            assert(!cli_.graph_partition());
+          } else {
             ret.setPartitions(node_part_sizes);
           }
           return ret;

@@ -19,16 +19,23 @@
 #include "gem5/m5ops.h"
 #endif
 
-#ifdef USE_ADJ_LIST_SINGLE_LIST
+#if defined(USE_ADJ_LIST_SINGLE_LIST)
 using AdjGraphT = AdjGraphSingleAdjListT;
 #define PRPushAdjFunc pageRankPushSingleAdjList
 #define PRPullAdjFunc pageRankPullSingleAdjList
-#else
-#ifdef USE_ADJ_LIST_NO_PREV
+
+#elif defined(USE_ADJ_LIST_MIX_CSR)
+using AdjGraphT = AdjGraphMixCSRT;
+#define PRPushAdjFunc pageRankPushAdjListMixCSR
+#define PRPullAdjFunc pageRankPullAdjListMixCSR
+
+#elif defined(USE_ADJ_LIST_NO_PREV)
 using AdjGraphT = AdjGraphNoPrevT;
+#define PRPushAdjFunc pageRankPushAdjList
+#define PRPullAdjFunc pageRankPullAdjList
+
 #else
 using AdjGraphT = AdjGraph;
-#endif
 #define PRPushAdjFunc pageRankPushAdjList
 #define PRPullAdjFunc pageRankPullAdjList
 #endif
@@ -86,6 +93,16 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
   }
   NodeID *nodes_data = nodes.data();
 #endif
+
+  /**
+   * Either evenly distribute the work or by graph partition.
+   */
+  ThreadWorkVecT thread_works;
+  if (g.hasPartition()) {
+    thread_works = fuseWork(g.getNodePartition(), num_threads);
+  } else {
+    thread_works = generateThreadWork(g.num_nodes(), num_threads);
+  }
 
   auto *__attribute__((unused)) out_edges = g.out_edges();
   auto *__attribute__((unused)) out_neigh_index_offset =
@@ -258,7 +275,7 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
     /*********************************************************************
      * Push adj list.
      ********************************************************************/
-    PRPushAdjFunc(adjGraph,
+    PRPushAdjFunc(adjGraph, thread_works,
 #ifdef SHUFFLE_NODES
                   nodes_data,
 #endif
@@ -269,7 +286,7 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
     /*********************************************************************
      * Push CSR.
      ********************************************************************/
-    pageRankPushCSR(g.num_nodes(),
+    pageRankPushCSR(g.num_nodes(), thread_works,
 #ifdef SHUFFLE_NODES
                     nodes_data,
 #endif

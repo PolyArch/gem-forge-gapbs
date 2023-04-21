@@ -365,11 +365,13 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 
     t.Stop();
 
+#ifndef GEM_FORGE
 #ifdef USE_PUSH
 #ifndef USE_SPATIAL_FRONTIER
-#ifndef GEM_FORGE
     printf("%6zu  td%11" PRId64 "  %10.5lfms %lu-%lu\n", iter, queue.size(),
            t.Millisecs(), queue.shared_out_start, queue.shared_in);
+#else
+    printf("%6zu.\n", iter);
 #endif
 #endif
 #endif

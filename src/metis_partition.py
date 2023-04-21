@@ -30,7 +30,7 @@ def scan_vertex(fn):
     return min_vertex, max_vertex
 
 
-def read_edge_list_as_adjlist(fn):
+def read_edge_list_as_adjlist(fn, symmetric):
     adjlist = list()
     edge_properties = list()
     min_vertex = -1
@@ -45,6 +45,8 @@ def read_edge_list_as_adjlist(fn):
             if len(fields) > 2:
                 # Some edge properties, usually weight.
                 edge_properties.append((src, dst, ' '.join(fields[2:])))
+            else:
+                edge_properties.append((src, dst, None))
             if min_vertex == -1:
                 min_vertex = min(src, dst)
             else:
@@ -64,15 +66,31 @@ def read_edge_list_as_adjlist(fn):
         for i in range(len(adjlist)):
             for j in range(len(adjlist[i])):
                 adjlist[i][j] -= min_vertex
-    
+
     # Construct the edge property map and also subtract min_vertex.
     edge_property_map = dict()
     for src, dst, prop in edge_properties:
+        if prop is None:
+            continue
         u = src - min_vertex if min_vertex > 0 else src
         v = dst - min_vertex if min_vertex > 0 else dst
         if u not in edge_property_map:
             edge_property_map[u] = dict()
         edge_property_map[u][v] = prop
+
+    # Symmetric the edge list.
+    if symmetric:
+        for src, dst, prop in edge_properties:
+            u = src - min_vertex if min_vertex > 0 else src
+            v = dst - min_vertex if min_vertex > 0 else dst
+            if u in adjlist[v]:
+                continue
+            adjlist[v].append(u)
+            if prop is None:
+                continue
+            if v not in edge_property_map:
+                edge_property_map[v] = dict()
+            edge_property_map[v][u] = prop
 
     return (adjlist, min_vertex, edge_property_map)
 
@@ -110,6 +128,15 @@ def analyze_partition(adjlist, parts, out_fn):
     total_internal_nodes = 0
     total_edges = 0
     total_internal_edges = 0
+    total_part_dist = 0
+    total_part_hops = 0
+    def get_hops(part1, part2):
+        cols = 8
+        row1 = part1 / cols
+        row2 = part2 / cols
+        col1 = part1 % cols
+        col2 = part2 % cols
+        return abs(row1 - row2) + abs(col1 - col2)
     for pid in range(num_parts):
         part = part_sets[pid]
         internal_nodes = 0
@@ -127,6 +154,8 @@ def analyze_partition(adjlist, parts, out_fn):
                     external_edges += 1
                 else:
                     internal_edges += 1
+                total_part_dist += abs(u_pid - v_pid)
+                total_part_hops += get_hops(u_pid, v_pid)
             if external_edges == 0:
                 internal_nodes += 1
         total_internal_nodes += internal_nodes
@@ -135,6 +164,7 @@ def analyze_partition(adjlist, parts, out_fn):
         print(f'  Part {pid} Nodes {len(part)} InternalNodes {internal_nodes} TotalEdges {edges} InternalEdges {internal_edges}')
     print(f'TotalInterlNodes {total_internal_nodes} Ratio {total_internal_nodes / len(adjlist)}')
     print(f'TotalInterlEdges {total_internal_edges} TotalEdges {total_edges} Ratio {total_internal_edges / total_edges}')
+    print(f'AvgPartDist {total_part_dist/total_edges:.2f} AvgHops {total_part_hops/total_edges:.2f}')
 
     with open(out_fn, 'w') as f:
         f.write(f'PartSize {num_parts} ')
@@ -283,8 +313,8 @@ def bounded_dfs(adjlist, bounded_depth):
                 edge_cuts += 1
     return (edge_cuts, clustered_nodes)
 
-def original_partition(adjlist, nparts):
-    num_nodes = len(adjlist)
+def original_partition(adjLit, nparts):
+    num_nodes = len(adjLit)
     parts = [0] * num_nodes
     part_size = (num_nodes + nparts - 1) // nparts
     for i in range(num_nodes):
@@ -296,6 +326,47 @@ def random_partition(adjlist, nparts):
     parts = original_partition(adjlist, nparts)
     random.shuffle(parts)
     return parts
+
+def equal_edges_partition(adjList, nparts, vertexes):
+    num_nodes = len(adjList)
+    parts = [0] * num_nodes
+    num_edges = sum([len(x) for x in adjList])
+    acc_edges = 0
+    total_acc_edges = 0
+    cur_part = 0
+    part_size = (num_edges + (nparts - cur_part) - 1 - total_acc_edges) // (nparts - cur_part)
+    for i in range(num_nodes):
+        vertex = vertexes[i]
+        edges = len(adjList[vertex])
+        if acc_edges >= part_size:
+            # Need to bump to next partition.
+            acc_edges = 0 
+            cur_part = min(cur_part + 1, nparts - 1)
+            part_size = (num_edges + (nparts - cur_part) - 1 - total_acc_edges) // (nparts - cur_part)
+        elif acc_edges + edges > part_size:
+            lhs = part_size - acc_edges
+            rhs = acc_edges + edges - part_size
+            # Decide if we want to assign to lhs or rhs
+            if rhs > lhs:
+                acc_edges = 0
+                cur_part = min(cur_part + 1, nparts - 1)
+                part_size = (num_edges + (nparts - cur_part) - 1 - total_acc_edges) // (nparts - cur_part)
+        parts[vertex] = cur_part
+        acc_edges += edges
+        total_acc_edges += edges
+    return parts
+
+
+def original_equal_edges_partition(adjList, nparts):
+    num_nodes = len(adjList)
+    vertexes = list(range(num_nodes))
+    return equal_edges_partition(adjList, nparts, vertexes)
+
+def random_equal_edges_partition(adjList, nparts):
+    num_nodes = len(adjList)
+    vertexes = list(range(num_nodes))
+    random.shuffle(vertexes)
+    return equal_edges_partition(adjList, nparts, vertexes)
 
 def main(argv):
 
@@ -309,8 +380,11 @@ def main(argv):
     parser.add_argument('--symmetric',
         action='store_true', default=False,
         help='Symetric')      
+    parser.add_argument('--analyze',
+        action='store_true', default=False,
+        help='Only analyze')      
     parser.add_argument('--part',
-        choices=['metis', 'orig', 'rnd'], default=metis,
+        choices=['metis', 'orig', 'orige', 'rnd', 'rnde'], default=metis,
         help='How to partition the graph')      
     parser.add_argument('--out-fn', '-o',
         type=str, default="float-trace.csv",
@@ -318,7 +392,7 @@ def main(argv):
 
     args = parser.parse_args(argv)
     is_weight = args.fn.endswith('.wel')
-    adjlist, min_vertex, edge_property_map = read_edge_list_as_adjlist(args.fn)
+    adjlist, min_vertex, edge_property_map = read_edge_list_as_adjlist(args.fn, args.symmetric)
     # First dump the original version and pick up a source.
     prefix = args.fn[:args.fn.rfind('.')]
     # dump_adjlist(adjlist, prefix, symmetry)
@@ -328,23 +402,28 @@ def main(argv):
         edge_cuts, parts = metis.part_graph(adjlist, args.nparts)
     elif args.part == 'orig':
         parts = original_partition(adjlist, args.nparts)
+    elif args.part == 'orige':
+        parts = original_equal_edges_partition(adjlist, args.nparts)
     elif args.part == 'rnd':
         parts = random_partition(adjlist, args.nparts)
+    elif args.part == 'rnde':
+        parts = random_equal_edges_partition(adjlist, args.nparts)
 
     print('End partition')
     # edge_cuts, parts = bounded_dfs(adjlist, nparts)
     part_fn = f'{prefix}-{args.part}{args.nparts}.part.txt'
     analyze_partition(adjlist, parts, out_fn=part_fn)
-    dump_partition(args.fn,
-        args.nparts,
-        adjlist,
-        parts,
-        is_weight,
-        args.symmetric,
-        edge_property_map,
-        min_vertex=min_vertex,
-        part_method=args.part,
-        )
+    if not args.analyze:
+        dump_partition(args.fn,
+            args.nparts,
+            adjlist,
+            parts,
+            is_weight,
+            args.symmetric,
+            edge_property_map,
+            min_vertex=min_vertex,
+            part_method=args.part,
+            )
 
 
 if __name__ == '__main__':

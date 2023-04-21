@@ -48,6 +48,10 @@ using WAdjGraphSingleAdjListT =
     AdjListGraph<NodeID, WNode, offsetof(WNode, v), sizeof(WNode::v), 64, false,
                  false, AdjListTypeE::SingleListPerGraph>;
 
+using AdjGraphMixCSRT =
+    AdjListGraph<NodeID, NodeID, 0, sizeof(NodeID), 64, false, true,
+                 AdjListTypeE::OneListPerNodeMixCSR>;
+
 typedef BuilderBase<NodeID, NodeID, WeightT> Builder;
 typedef BuilderBase<NodeID, WNode, WeightT> WeightedBuilder;
 

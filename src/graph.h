@@ -304,7 +304,7 @@ private:
   DestID_ *in_neighbors_ = nullptr;
 
 public:
-  using PartitionT = std::vector<NodeID_>;
+  using PartitionT = std::vector<int64_t>;
   void setPartitions(const PartitionT &node_part_sizes) {
     NodeID_ node_acc = 0;
     NodeID_ in_acc = 0;
@@ -337,6 +337,29 @@ public:
     m5_stream_nuca_set_property(ptr, STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
                                 -parts_int);
 #endif
+  }
+
+  PartitionT convertToSizePartition(const PartitionT &parts,
+                                    int elemSize) const {
+    PartitionT ret;
+    for (int i = 0; i < parts.size(); ++i) {
+      auto x = parts[i];
+      if (i == 0) {
+        ret.push_back(x / elemSize);
+      } else {
+        auto prev = parts[i - 1];
+        ret.push_back((x - prev) / elemSize);
+      }
+    }
+    return ret;
+  }
+
+  PartitionT getNodePartition() const {
+    return this->convertToSizePartition(this->node_parts, sizeof(NodeID_));
+  }
+
+  bool hasPartition() const {
+    return !this->node_parts.empty();
   }
 
   // Data structures to remember the partition.

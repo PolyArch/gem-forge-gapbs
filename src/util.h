@@ -171,20 +171,22 @@ void gf_warm_array(const char *name, void *buffer, uint64_t totalBytes) {
 /**
  * Read the partiton file.
  */
-std::vector<int> getNodePartitionSizes(const std::string &graphFn) {
+std::vector<int64_t> getNodePartitionSizes(const std::string &graphFn) {
   auto pos = graphFn.rfind('.');
   assert(pos != std::string::npos);
   auto prefix = graphFn.substr(0, pos);
   auto partitionFn = prefix + ".part.txt";
   std::ifstream f(partitionFn);
-  assert(f.is_open());
+  std::vector<int64_t> partSizes;
+  if (!f.is_open()) {
+    return partSizes;
+  }
   std::string field;
   f >> field;
   assert(field == "PartSize");
   int nParts;
   f >> nParts;
   assert(nParts > 0);
-  std::vector<int> partSizes;
   for (int i = 0; i < nParts; ++i) {
     size_t partSize;
     f >> partSize;
@@ -201,6 +203,45 @@ __attribute__((noinline)) void startThreads(int num_threads) {
   for (int i = 0; i < num_threads; ++i) {
     __attribute__((unused)) volatile float v = *pv;
   }
+}
+
+using ThreadWorkVecT = std::vector<std::pair<int64_t, int64_t>>;
+
+__attribute__((noinline)) ThreadWorkVecT generateThreadWork(int64_t total,
+                                                            int threads) {
+  auto part = (total + threads - 1) / threads;
+  ThreadWorkVecT ret;
+  int64_t accWork = 0;
+  for (int i = 0; i < threads; ++i) {
+    auto work = std::min(part, total - accWork);
+    ret.emplace_back(accWork, accWork + work);
+    accWork += work;
+  }
+  assert(accWork == total);
+  return ret;
+}
+
+__attribute__((noinline)) ThreadWorkVecT
+fuseWork(const std::vector<int64_t> &part, int threads) {
+  auto numParts = part.size();
+  auto partsPerThread = (numParts + threads - 1) / threads;
+  ThreadWorkVecT ret;
+  int64_t accWork = 0;
+  for (int i = 0; i < threads; ++i) {
+    int64_t work = 0;
+    for (int j = i * partsPerThread;
+         j < std::min(numParts, (i + 1) * partsPerThread); ++j) {
+      work += part[j];
+    }
+    ret.emplace_back(accWork, accWork + work);
+    accWork += work;
+  }
+  int64_t total = 0;
+  for (auto x : part) {
+    total += x;
+  }
+  assert(accWork == total);
+  return ret;
 }
 
 #endif // UTIL_H_

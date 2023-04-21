@@ -25,60 +25,75 @@ typedef float ScoreT;
 
 const float kDamp = 0.85;
 
-__attribute__((noinline)) void pageRankPushCSR(NodeID num_nodes,
+__attribute__((noinline)) void
+pageRankPushCSR(NodeID num_nodes, const ThreadWorkVecT thread_works,
 #ifdef SHUFFLE_NODES
-                                               NodeID *nodes,
+                NodeID *nodes,
 #endif
-                                               ScoreT *scores,
-                                               ScoreT *next_scores,
-                                               EdgeIndexT *out_neigh_index,
-                                               NodeID *out_edges) {
+                ScoreT *scores, ScoreT *next_scores,
+                EdgeIndexT *out_neigh_index, NodeID *out_edges) {
 
 #ifdef SHUFFLE_NODES
 
-#pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(                       \
-    scores, out_neigh_index, out_edges, next_scores, nodes)
-  for (int64_t i = 0; i < num_nodes; i++) {
+#pragma omp parallel firstprivate(scores, out_neigh_index, out_edges,          \
+                                  next_scores, nodes)
+  {
+
+    auto tid = omp_get_thread_num();
+
+    auto thread_lhs = thread_works[tid].first;
+    auto thread_rhs = thread_works[tid].second;
+
+    for (int64_t i = thread_lhs; i < thread_rhs; i++) {
 
 #pragma ss stream_name "gap.pr_push.atomic.node.ld"
-    NodeID n = nodes[i];
+      NodeID n = nodes[i];
 
 #else
 
-#pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(                       \
-    scores, out_neigh_index, out_edges, next_scores)
-  for (int64_t i = 0; i < num_nodes; i++) {
+#pragma omp parallel firstprivate(scores, out_neigh_index, out_edges,          \
+                                  next_scores)
+  {
 
-    int64_t n = i;
+    auto tid = omp_get_thread_num();
+
+    auto thread_lhs = thread_works[tid].first;
+    auto thread_rhs = thread_works[tid].second;
+
+    for (int64_t i = thread_lhs; i < thread_rhs; i++) {
+
+      int64_t n = i;
 
 #endif // SHUFFLE_NODES
 
-    EdgeIndexT *out_neigh_ptr = out_neigh_index + n;
+      EdgeIndexT *out_neigh_ptr = out_neigh_index + n;
 
 #pragma ss stream_name "gap.pr_push.atomic.score.ld"
-    ScoreT score = scores[n];
+      ScoreT score = scores[n];
 
 #pragma ss stream_name "gap.pr_push.atomic.out_begin.ld"
-    EdgeIndexT out_begin = out_neigh_ptr[0];
+      EdgeIndexT out_begin = out_neigh_ptr[0];
 
 #pragma ss stream_name "gap.pr_push.atomic.out_end.ld"
-    EdgeIndexT out_end = out_neigh_ptr[1];
+      EdgeIndexT out_end = out_neigh_ptr[1];
 
 #ifdef USE_EDGE_INDEX_OFFSET
-    NodeID *out_ptr = out_edges + out_begin;
+      NodeID *out_ptr = out_edges + out_begin;
 #else
-    NodeID *out_ptr = out_begin;
+      NodeID *out_ptr = out_begin;
 #endif
 
-    int64_t out_degree = out_end - out_begin;
-    ScoreT outgoing_contrib = score / out_degree;
-    for (int64_t j = 0; j < out_degree; ++j) {
+      int64_t out_degree = out_end - out_begin;
+      ScoreT outgoing_contrib = score / out_degree;
+      for (int64_t j = 0; j < out_degree; ++j) {
 
 #pragma ss stream_name "gap.pr_push.atomic.out_v.ld"
-      NodeID v = out_ptr[j];
+        NodeID v = out_ptr[j];
 
 #pragma ss stream_name "gap.pr_push.atomic.next.at"
-      __atomic_fetch_fadd(next_scores + v, outgoing_contrib, __ATOMIC_RELAXED);
+        __atomic_fetch_fadd(next_scores + v, outgoing_contrib,
+                            __ATOMIC_RELAXED);
+      }
     }
   }
 }
@@ -89,6 +104,7 @@ __attribute__((noinline)) void pageRankPushAdjList(
 #else
     AdjGraph &graph,
 #endif
+    const ThreadWorkVecT thread_works,
 #ifdef SHUFFLE_NODES
     NodeID *nodes,
 #endif
@@ -154,7 +170,8 @@ __attribute__((noinline)) void pageRankPushAdjList(
 }
 
 __attribute__((noinline)) void
-pageRankPushSingleAdjList(AdjGraphSingleAdjListT &graph,
+pageRankPushAdjListMixCSR(AdjGraphMixCSRT &graph,
+                          const ThreadWorkVecT thread_works,
 #ifdef SHUFFLE_NODES
                           NodeID *nodes,
 #endif
@@ -183,13 +200,8 @@ pageRankPushSingleAdjList(AdjGraphSingleAdjListT &graph,
 
 #endif // SHUFFLE_NODES
 
-    auto adj_ptr = adj_list + n;
-
-#pragma ss stream_name "gap.pr_push.adj.lhs.ld"
-    auto *lhs = reinterpret_cast<NodeID *>(adj_ptr[0]);
-
-#pragma ss stream_name "gap.pr_push.adj.rhs.ld"
-    auto *rhs = reinterpret_cast<NodeID *>(adj_ptr[1]);
+#pragma ss stream_name "gap.pr_push.adj.node.ld"
+    auto *cur_node = adj_list[n];
 
 #pragma ss stream_name "gap.pr_push.adj.score.ld"
     ScoreT score = scores[n];
@@ -199,51 +211,169 @@ pageRankPushSingleAdjList(AdjGraphSingleAdjListT &graph,
 
     ScoreT outgoing_contrib = score / out_degree;
 
-    auto *rhs_node = AdjGraphSingleAdjListT::getNodePtr(rhs);
-    auto rhs_offset = AdjGraphSingleAdjListT::getNodeOffset(rhs);
+    // This is CSR edge list.
+    auto out_edges = reinterpret_cast<NodeID *>(cur_node);
 
-    if (lhs != rhs) {
+    bool do_csr =
+        out_degree > 0 && out_degree < AdjGraphMixCSRT::MixCSRThreshold;
+    bool do_adj =
+        out_degree > 0 && out_degree >= AdjGraphMixCSRT::MixCSRThreshold;
 
+    if (do_csr) {
+
+      int64_t j = 0;
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
       while (true) {
-        auto *lhs_node = AdjGraphSingleAdjListT::getNodePtr(lhs);
-        const auto local_rhs =
-            lhs_node != rhs_node
-                ? (lhs_node->edges + AdjGraphSingleAdjListT::EdgesPerNode)
-                : rhs;
-        const auto numEdges = local_rhs - lhs;
 
-        int64_t j = 0;
+#pragma ss stream_name "gap.pr_push.csr.out_v.ld"
+        NodeID v = out_edges[j];
+
+#pragma ss stream_name "gap.pr_push.csr.score.at"
+        __atomic_fetch_fadd(next_scores + v, outgoing_contrib,
+                            __ATOMIC_RELAXED);
+        ++j;
+        if (j == out_degree) {
+          break;
+        }
+      }
+    }
+
+    if (do_adj) {
 
 #pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
-        while (true) {
+      while (true) {
+
+#pragma ss stream_name "gap.pr_push.adj.n_edges.ld"
+        const auto numEdges = cur_node->numEdges;
+
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+        for (int64_t j = 0; j < numEdges; ++j) {
 
 #pragma ss stream_name "gap.pr_push.adj.out_v.ld"
-          NodeID v = lhs[j];
+          NodeID v = cur_node->edges[j];
 
 #pragma ss stream_name "gap.pr_push.adj.score.at"
           __atomic_fetch_fadd(next_scores + v, outgoing_contrib,
                               __ATOMIC_RELAXED);
-
-          j++;
-          if (j == numEdges) {
-            break;
-          }
         }
 
 #pragma ss stream_name "gap.pr_push.adj.next_node.ld"
-        auto next_node = lhs_node->next;
+        auto next_node = cur_node->next;
 
-        lhs = next_node->edges;
-
-        /**
-         * I need to write this werid loop break condition to to distinguish lhs
-         * and next_lhs for LoopBound.
-         * TODO: Fix this in the compiler.
-         */
-        bool rhs_zero = next_node == rhs_node && rhs_offset == 0;
-        bool should_break = rhs_zero || (lhs_node == rhs_node);
-        if (should_break) {
+        cur_node = next_node;
+        if (cur_node == nullptr) {
           break;
+        }
+      }
+    }
+  }
+}
+
+__attribute__((noinline)) void
+pageRankPushSingleAdjList(AdjGraphSingleAdjListT &graph,
+                          const ThreadWorkVecT thread_works,
+#ifdef SHUFFLE_NODES
+                          NodeID *nodes,
+#endif
+                          ScoreT *scores, ScoreT *next_scores) {
+
+  auto __attribute__((unused)) num_nodes = graph.N;
+  auto __attribute__((unused)) adj_list = graph.adjList;
+  auto __attribute__((unused)) degrees = graph.degrees;
+
+#ifdef SHUFFLE_NODES
+#define PRIVATE_OBJ scores, next_scores, nodes, adj_list, degrees
+#else
+#define PRIVATE_OBJ scores, next_scores, adj_list, degrees
+#endif
+
+#ifdef USE_THREAD_WORK
+
+#pragma omp parallel firstprivate(PRIVATE_OBJ)
+  {
+    auto tid = omp_get_thread_num();
+
+    auto thread_lhs = thread_works[tid].first;
+    auto thread_rhs = thread_works[tid].second;
+
+    for (int64_t i = thread_lhs; i < thread_rhs; i++) {
+
+#else
+  {
+#pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(PRIVATE_OBJ)
+    for (int64_t i = 0; i < num_nodes; i++) {
+
+#endif
+
+#ifdef SHUFFLE_NODES
+#pragma ss stream_name "gap.pr_push.atomic.node.ld"
+      NodeID n = nodes[i];
+#else
+      int64_t n = i;
+#endif
+
+      auto adj_ptr = adj_list + n;
+
+#pragma ss stream_name "gap.pr_push.adj.lhs.ld"
+      auto *lhs = reinterpret_cast<NodeID *>(adj_ptr[0]);
+
+#pragma ss stream_name "gap.pr_push.adj.rhs.ld"
+      auto *rhs = reinterpret_cast<NodeID *>(adj_ptr[1]);
+
+#pragma ss stream_name "gap.pr_push.adj.score.ld"
+      ScoreT score = scores[n];
+
+#pragma ss stream_name "gap.pr_push.adj.degree.ld"
+      int64_t out_degree = degrees[n];
+
+      ScoreT outgoing_contrib = score / out_degree;
+
+      auto *rhs_node = AdjGraphSingleAdjListT::getNodePtr(rhs);
+      auto rhs_offset = AdjGraphSingleAdjListT::getNodeOffset(rhs);
+
+      if (lhs != rhs) {
+
+        while (true) {
+          auto *lhs_node = AdjGraphSingleAdjListT::getNodePtr(lhs);
+          const auto local_rhs =
+              lhs_node != rhs_node
+                  ? (lhs_node->edges + AdjGraphSingleAdjListT::EdgesPerNode)
+                  : rhs;
+          const auto numEdges = local_rhs - lhs;
+
+          int64_t j = 0;
+
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+          while (true) {
+
+#pragma ss stream_name "gap.pr_push.adj.out_v.ld"
+            NodeID v = lhs[j];
+
+#pragma ss stream_name "gap.pr_push.adj.score.at"
+            __atomic_fetch_fadd(next_scores + v, outgoing_contrib,
+                                __ATOMIC_RELAXED);
+
+            j++;
+            if (j == numEdges) {
+              break;
+            }
+          }
+
+#pragma ss stream_name "gap.pr_push.adj.next_node.ld"
+          auto next_node = lhs_node->next;
+
+          lhs = next_node->edges;
+
+          /**
+           * I need to write this werid loop break condition to to distinguish
+           * lhs and next_lhs for LoopBound.
+           * TODO: Fix this in the compiler.
+           */
+          bool rhs_zero = next_node == rhs_node && rhs_offset == 0;
+          bool should_break = rhs_zero || (lhs_node == rhs_node);
+          if (should_break) {
+            break;
+          }
         }
       }
     }

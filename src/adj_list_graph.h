@@ -17,6 +17,10 @@
 
 using NumEdgeInNodeT = int64_t;
 
+#ifndef ADJ_LIST_GRAPH_MIX_CSR_THRESHOLD
+#define ADJ_LIST_GRAPH_MIX_CSR_THRESHOLD 2
+#endif
+
 template <
     // Type of edge.
     typename EdgeT,
@@ -156,7 +160,8 @@ public:
   /**
    * If the degree of a node is beyond this threshold, we use AdjList.
    */
-  constexpr static int MixCSRThreshold = 2 * EdgesPerNode;
+  constexpr static int MixCSRThreshold =
+      ADJ_LIST_GRAPH_MIX_CSR_THRESHOLD * EdgesPerNode;
 
   const int64_t N;
   AdjListNode **adjList = nullptr;
@@ -305,7 +310,7 @@ public:
   __attribute__((noinline)) void warmAdjList() {
     if (ListType == AdjListTypeE::SingleListPerGraph) {
       this->warmSingleAdjList();
-    } else if (ListType == AdjListTypeE::OneListPerNode) {
+    } else if (this->IsOneListPerNode) {
       this->warmOneAdjListPerNode();
     }
   }
@@ -314,19 +319,33 @@ public:
     // Warm up the adjacent list.
     printf("Start warming AdjList.\n");
     auto adj_list = this->adjList;
+    auto degrees = this->degrees;
     int64_t edges = 0;
-#pragma omp parallel for schedule(static) firstprivate(adj_list) reduction(+:edges)
+#pragma omp parallel for schedule(static) firstprivate(adj_list, degrees) reduction(+:edges)
     for (int64_t i = 0; i < this->N; i++) {
 
+      auto degree = degrees[i];
       auto *cur_node = adj_list[i];
 
       auto sum = 0;
 
+      if (ListType == AdjListTypeE::OneListPerNodeMixCSR &&
+          degree < MixCSRThreshold) {
+        // This is just normal CSR edges.
+        EdgeT *edges = reinterpret_cast<EdgeT *>(cur_node);
 #pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
-      while (cur_node) {
-        auto next_node = cur_node->next;
-        sum += reinterpret_cast<uint64_t>(next_node);
-        cur_node = next_node;
+        for (int i = 0; i < degree; i += 64 / sizeof(EdgeT)) {
+          NodeID_ out_v = edges[i];
+          sum += out_v;
+        }
+      } else {
+        // This is adj list.
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+        while (cur_node) {
+          auto next_node = cur_node->next;
+          sum += reinterpret_cast<uint64_t>(next_node);
+          cur_node = next_node;
+        }
       }
 
       edges += sum;
@@ -509,7 +528,7 @@ public:
     NodeID_ curVertex = 0;
     NodeID_ curOffset = 0;
 
-    for (int64_t i = 0; i < total_edges; i += EdgesPerNode) {
+    for (int64_t i = 0; i <= total_edges; i += EdgesPerNode) {
 
       // Construct the addresses.
       auto numEdges =
@@ -557,8 +576,7 @@ public:
     // Set the last ptr for the rest nodes.
     assert(curVertex <= N);
     assert(curOffset == total_edges);
-    assert(total_edges > 0);
-    auto lastPtr = curNode->edges + (total_edges - 1) % EdgesPerNode + 1;
+    auto lastPtr = curNode->edges + total_edges % EdgesPerNode;
 #ifdef GEM_FORGE
 #pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
 #endif
