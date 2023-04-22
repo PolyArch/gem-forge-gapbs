@@ -240,6 +240,41 @@ public:
                                                 inv_index, inv_neighs);
   }
 
+  /**
+   * Try to read and set the partition edge list for the graph.
+   *
+   * This is used for edge partitioned graph.
+   */
+  void tryReadInterPartitionEdgeList(CSRGraph<NodeID_, DestID_, invert> &g) {
+    const auto &graphFn = cli_.filename();
+    auto pos = graphFn.rfind('.');
+    assert(pos != std::string::npos);
+    auto prefix = graphFn.substr(0, pos);
+    auto partELFn = prefix + ".part.el";
+    std::ifstream f(partELFn);
+    if (!f.is_open()) {
+      return;
+    }
+    /**
+     * The part el only contain edges: duplicated -> original,
+     * We also add edges: original -> duplicated.
+     */
+    Timer t;
+    t.Start();
+    EdgeList inEL, outEL;
+    NodeID_ duplicated, original;
+    while (f >> duplicated >> original) {
+      inEL.push_back(Edge(duplicated, original));
+      outEL.push_back(Edge(original, duplicated));
+    }
+
+    g.setInterPartitionEdges(std::move(inEL), std::move(outEL));
+
+    f.close();
+    t.Stop();
+    PrintTime("Read InterPartEL Time", t.Seconds());
+  }
+
   CSRGraph<NodeID_, DestID_, invert> MakeGraph() {
     CSRGraph<NodeID_, DestID_, invert> g;
     { // extra scope to trigger earlier deletion of el (save memory)
@@ -256,6 +291,7 @@ public:
           } else {
             ret.setPartitions(node_part_sizes);
           }
+          tryReadInterPartitionEdgeList(ret);
           return ret;
         } else {
           el = r.ReadFile(needs_weights_);

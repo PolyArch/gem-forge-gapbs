@@ -91,7 +91,7 @@ public:
     }
   }
 
-  bool empty() { return end_size_ == start_; }
+  bool empty() const { return end_size_ == start_; }
 
   void clear() { end_size_ = start_; }
 

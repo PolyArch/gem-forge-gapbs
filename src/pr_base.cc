@@ -68,8 +68,8 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
   const auto num_nodes = g.num_nodes();
   const auto __attribute__((unused)) num_edges = g.num_edges_directed();
 
-  const ScoreT init_score = 1.0f / num_nodes;
-  const ScoreT base_score = (1.0f - kDamp) / num_nodes;
+  const ScoreT __attribute__((unused)) init_score = 1.0f / num_nodes;
+  const ScoreT __attribute__((unused)) base_score = (1.0f - kDamp) / num_nodes;
 
   pvector<ScoreT> scores0(num_nodes, init_score);
   pvector<ScoreT> scores1(num_nodes, 0);
@@ -261,11 +261,14 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
 #ifdef GEM_FORGE
     m5_work_begin(0, 0);
 #endif
+
+#ifndef GEM_FORGE
     // Testing purpose.
     for (NodeID n = 0; n < std::min(4l, g.num_nodes()); n++) {
       printf(" - Iter %d-0 %d Score0 %f Score1 %f.\n", iter, n, scores_data0[n],
              scores_data1[n]);
     }
+#endif
 
 #ifndef DISABLE_KERNEL1
 
@@ -309,11 +312,24 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
     m5_work_end(0, 0);
     m5_work_begin(1, 0);
 #endif
-    // Testing purpose.
+// Testing purpose.
+#ifndef GEM_FORGE
     for (NodeID n = 0; n < std::min(4l, g.num_nodes()); n++) {
       printf(" - Iter %d-1 %d Score0 %f Score1 %f.\n", iter, n, scores_data0[n],
              scores_data1[n]);
     }
+#endif
+
+#ifndef DISABLE_INTER_PART
+    if (g.hasInterPartitionEdges()) {
+      // Handle inter-partition update.
+      const auto &inter_part_in_edges = g.getInterPartInEdges();
+      const auto &inter_part_out_edges = g.getInterPartOutEdges();
+      pageRankPushInterPartUpdate(inter_part_in_edges.size(),
+                                  inter_part_in_edges.data(),
+                                  inter_part_out_edges.data(), scores_data1);
+    }
+#endif
 
     float error = 0;
 
@@ -348,11 +364,13 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
 #endif
 #endif
 #endif
+#ifndef GEM_FORGE
     // Testing purpose.
     for (NodeID n = 0; n < std::min(4l, g.num_nodes()); n++) {
       printf(" - Iter %d-2 %d Score0 %f Score1 %f.\n", iter, n, scores_data0[n],
              scores_data1[n]);
     }
+#endif
 
     printf(" %2d    %f\n", iter, error);
 

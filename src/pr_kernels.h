@@ -409,6 +409,46 @@ pageRankPushUpdate(NodeID num_nodes, ScoreT *scores, ScoreT *next_scores,
   return error;
 }
 
+__attribute__((noinline)) void pageRankPushInterPartUpdate(
+    int64_t num_inter_part_edges,
+    const EdgePair<NodeID, NodeID> *inter_part_in_edges,
+    const EdgePair<NodeID, NodeID> *inter_part_out_edges, ScoreT *scores) {
+
+#pragma omp parallel for schedule(static)                                      \
+    firstprivate(num_inter_part_edges, inter_part_in_edges, scores)
+  for (int64_t i = 0; i < num_inter_part_edges; ++i) {
+
+#pragma ss stream_name "gap.pr_push.inter_part_in.src.ld"
+    auto src = inter_part_in_edges[i].u;
+
+#pragma ss stream_name "gap.pr_push.inter_part_in.dst.ld"
+    auto dst = inter_part_in_edges[i].v;
+
+#pragma ss stream_name "gap.pr_push.inter_part_in.score.ld"
+    ScoreT score = scores[src];
+
+#pragma ss stream_name "gap.pr_push.inter_part_in.score.at"
+    __atomic_fetch_fadd(scores + dst, score, __ATOMIC_RELAXED);
+  }
+
+#pragma omp parallel for schedule(static)                                      \
+    firstprivate(num_inter_part_edges, inter_part_in_edges, scores)
+  for (int64_t i = 0; i < num_inter_part_edges; ++i) {
+
+#pragma ss stream_name "gap.pr_push.inter_part_out.src.ld"
+    auto src = inter_part_in_edges[i].v;
+
+#pragma ss stream_name "gap.pr_push.inter_part_out.dst.ld"
+    auto dst = inter_part_in_edges[i].u;
+
+#pragma ss stream_name "gap.pr_push.inter_part_out.score.ld"
+    ScoreT score = scores[src];
+
+#pragma ss stream_name "gap.pr_push.inter_part_out.score.at"
+    scores[dst] = score;
+  }
+}
+
 __attribute__((noinline)) void pageRankPullUpdate(NodeID num_nodes,
                                                   ScoreT *scores,
                                                   ScoreT *out_contribs,

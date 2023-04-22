@@ -304,6 +304,8 @@ private:
   DestID_ *in_neighbors_ = nullptr;
 
 public:
+  using Edge = EdgePair<NodeID_, DestID_>;
+  using EdgeList = pvector<Edge>;
   using PartitionT = std::vector<int64_t>;
   void setPartitions(const PartitionT &node_part_sizes) {
     NodeID_ node_acc = 0;
@@ -358,14 +360,35 @@ public:
     return this->convertToSizePartition(this->node_parts, sizeof(NodeID_));
   }
 
-  bool hasPartition() const {
-    return !this->node_parts.empty();
-  }
+  bool hasPartition() const { return !this->node_parts.empty(); }
 
   // Data structures to remember the partition.
   PartitionT node_parts;
   PartitionT in_edge_parts;
   PartitionT out_edge_parts;
+
+  /**
+   * Information for cross partition edges.
+   */
+  bool hasInterPartitionEdges() const {
+    return !this->inter_part_in_edges.empty();
+  }
+
+  void setInterPartitionEdges(EdgeList inter_part_in_edges,
+                              EdgeList inter_part_out_edges) {
+    this->inter_part_in_edges = std::move(inter_part_in_edges);
+    this->inter_part_out_edges = std::move(inter_part_out_edges);
+  }
+
+  const EdgeList &getInterPartInEdges() const {
+    return this->inter_part_in_edges;
+  }
+  const EdgeList &getInterPartOutEdges() const {
+    return this->inter_part_out_edges;
+  }
+
+  EdgeList inter_part_in_edges;
+  EdgeList inter_part_out_edges;
 };
 
 #endif // GRAPH_H_

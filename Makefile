@@ -26,6 +26,7 @@ KERNELS = bc bfs bfs_pull bfs_pull_shuffle cc cc_sv tc
 KERNELS += pr_pull
 KERNELS += pr_pull_shuffle
 KERNELS += pr_push
+KERNELS += pr_push_inter_part
 KERNELS += pr_push_adj_rnd
 KERNELS += pr_push_adj_lnr
 KERNELS += pr_push_adj_aff
