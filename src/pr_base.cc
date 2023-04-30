@@ -134,6 +134,17 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
                         0, 0);
   m5_stream_nuca_align(out_neigh_index, scores_data1, 0);
 
+  m5_stream_nuca_region("gap.real_out_degree", g.getRealOutDegrees(),
+                        sizeof(*g.getRealOutDegrees()), num_nodes, 0, 0);
+  m5_stream_nuca_align(g.getRealOutDegrees(), scores_data1, 0);
+
+  if (g.hasInterPartitionEdges()) {
+    const auto &inter_part_edges = g.getInterPartEdges();
+    m5_stream_nuca_region("gap.inter_part_edges", inter_part_edges.data(),
+                          sizeof(inter_part_edges[0]), inter_part_edges.size(),
+                          0, 0);
+  }
+
   if (graph_partition) {
     // Inform the GemForge about the partitioned graph.
     g.setStreamNUCAPartition(scores_data1, g.node_parts);
@@ -202,7 +213,14 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
 #endif
     gf_warm_array("scores0", scores_data0, num_nodes * sizeof(scores_data0[0]));
     gf_warm_array("scores1", scores_data1, num_nodes * sizeof(scores_data1[0]));
+    gf_warm_array("real_out_degrees", (void *)(g.getRealOutDegrees()),
+                  num_nodes * sizeof(*g.getRealOutDegrees()));
 
+    if (g.hasInterPartitionEdges()) {
+      const auto &inter_part_edges = g.getInterPartEdges();
+      gf_warm_array("inter_part_edges", inter_part_edges.data(),
+                    inter_part_edges.size() * sizeof(inter_part_edges[0]));
+    }
 #ifndef USE_PUSH
     // Pull uses out_neigh_index for outgoing degree.
     gf_warm_array("out_neigh_index", out_neigh_index,
@@ -293,7 +311,8 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
 #ifdef SHUFFLE_NODES
                     nodes_data,
 #endif
-                    scores_data0, scores_data1, out_neigh_index, out_edges);
+                    scores_data0, scores_data1, out_neigh_index, out_edges,
+                    g.getRealOutDegrees());
 
 #endif // USE_ADJ_LIST
 
@@ -302,7 +321,8 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
     /*********************************************************************
      * Pull update.
      ********************************************************************/
-    pageRankPullUpdate(num_nodes, scores_data0, scores_data1, out_neigh_index);
+    pageRankPullUpdate(num_nodes, scores_data0, scores_data1,
+                       g.getRealOutDegrees());
 
 #endif
 
@@ -310,7 +330,6 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
 
 #ifdef GEM_FORGE
     m5_work_end(0, 0);
-    m5_work_begin(1, 0);
 #endif
 // Testing purpose.
 #ifndef GEM_FORGE
@@ -321,14 +340,24 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
 #endif
 
 #ifndef DISABLE_INTER_PART
+
+#ifdef GEM_FORGE
+    m5_work_begin(2, 0);
+#endif
     if (g.hasInterPartitionEdges()) {
+
       // Handle inter-partition update.
-      const auto &inter_part_in_edges = g.getInterPartInEdges();
-      const auto &inter_part_out_edges = g.getInterPartOutEdges();
-      pageRankPushInterPartUpdate(inter_part_in_edges.size(),
-                                  inter_part_in_edges.data(),
-                                  inter_part_out_edges.data(), scores_data1);
+      const auto &inter_part_edges = g.getInterPartEdges();
+      pageRankPushInterPartUpdate(inter_part_edges.size(),
+                                  inter_part_edges.data(), scores_data1);
     }
+#ifdef GEM_FORGE
+    m5_work_end(2, 0);
+#endif
+#endif
+
+#ifdef GEM_FORGE
+    m5_work_begin(1, 0);
 #endif
 
     float error = 0;

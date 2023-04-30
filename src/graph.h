@@ -133,6 +133,7 @@ public:
     num_edges_ = (out_index_[num_nodes_] - out_index_[0]) / 2;
     this->out_index_offset_ = this->GenIndexOffset(out_index_, out_neighbors_);
     this->in_index_offset_ = this->out_index_offset_;
+    this->initRealDegrees();
   }
 
   CSRGraph(int64_t num_nodes, DestID_ **out_index, DestID_ *out_neighs,
@@ -143,6 +144,7 @@ public:
     num_edges_ = out_index_[num_nodes_] - out_index_[0];
     this->out_index_offset_ = this->GenIndexOffset(out_index_, out_neighbors_);
     this->in_index_offset_ = this->GenIndexOffset(in_index_, in_neighbors_);
+    this->initRealDegrees();
   }
 
   CSRGraph(CSRGraph &&other)
@@ -151,7 +153,10 @@ public:
         out_index_offset_(other.out_index_offset_),
         out_neighbors_(other.out_neighbors_), in_index_(other.in_index_),
         in_index_offset_(other.in_index_offset_),
-        in_neighbors_(other.in_neighbors_) {
+        in_neighbors_(other.in_neighbors_),
+        inter_part_edges(std::move(other.inter_part_edges)),
+        real_in_degrees(other.real_in_degrees),
+        real_out_degrees(other.real_out_degrees) {
     other.num_edges_ = -1;
     other.num_nodes_ = -1;
     other.out_index_ = nullptr;
@@ -160,6 +165,8 @@ public:
     other.in_index_ = nullptr;
     other.in_index_offset_ = nullptr;
     other.in_neighbors_ = nullptr;
+    other.real_in_degrees = nullptr;
+    other.real_out_degrees = nullptr;
   }
 
   ~CSRGraph() { ReleaseResources(); }
@@ -369,26 +376,62 @@ public:
 
   /**
    * Information for cross partition edges.
+   * Notice that we have to remember the real degree as nodes are duplicated
+   * between partitions.
    */
+  using InterPartEdge = EdgePair<NodeID_, NodeID_>;
+  using InterPartEdgeList = pvector<InterPartEdge>;
   bool hasInterPartitionEdges() const {
-    return !this->inter_part_in_edges.empty();
+    return !this->inter_part_edges.empty();
   }
 
-  void setInterPartitionEdges(EdgeList inter_part_in_edges,
-                              EdgeList inter_part_out_edges) {
-    this->inter_part_in_edges = std::move(inter_part_in_edges);
-    this->inter_part_out_edges = std::move(inter_part_out_edges);
+  void initRealDegrees() {
+    this->real_in_degrees = alignedAllocAndTouch<NodeID_>(this->num_nodes());
+    for (NodeID_ u = 0; u < this->num_nodes(); ++u) {
+      this->real_in_degrees[u] = this->in_degree(u);
+    }
+    if (this->in_neighbors_ == this->out_neighbors_) {
+      // Undirect graph.
+      this->real_out_degrees = this->real_in_degrees;
+    } else {
+      this->real_out_degrees = alignedAllocAndTouch<NodeID_>(this->num_nodes());
+      for (NodeID_ u = 0; u < this->num_nodes(); ++u) {
+        this->real_out_degrees[u] = this->out_degree(u);
+      }
+    }
   }
 
-  const EdgeList &getInterPartInEdges() const {
-    return this->inter_part_in_edges;
-  }
-  const EdgeList &getInterPartOutEdges() const {
-    return this->inter_part_out_edges;
+  void setInterPartitionEdges(InterPartEdgeList inter_part_edges) {
+    this->inter_part_edges = std::move(inter_part_edges);
+    /**
+     * Compute real degrees degress.
+     */
+    bool directed = this->in_neighbors_ != this->out_neighbors_;
+    for (const auto &edge : this->inter_part_edges) {
+      this->real_in_degrees[edge.v] += this->real_in_degrees[edge.u];
+      if (directed) {
+        this->real_out_degrees[edge.v] += this->real_out_degrees[edge.u];
+      }
+    }
+    for (const auto &edge : this->inter_part_edges) {
+      this->real_in_degrees[edge.u] = this->real_in_degrees[edge.v];
+      if (directed) {
+        this->real_out_degrees[edge.u] = this->real_out_degrees[edge.v];
+      }
+    }
   }
 
-  EdgeList inter_part_in_edges;
-  EdgeList inter_part_out_edges;
+  const InterPartEdgeList &getInterPartEdges() const {
+    return this->inter_part_edges;
+  }
+
+  const NodeID_ *getRealInDegrees() const { return this->real_in_degrees; }
+  const NodeID_ *getRealOutDegrees() const { return this->real_out_degrees; }
+
+  // Inter partition edges are undirected.
+  InterPartEdgeList inter_part_edges;
+  NodeID_ *real_in_degrees = nullptr;
+  NodeID_ *real_out_degrees = nullptr;
 };
 
 #endif // GRAPH_H_

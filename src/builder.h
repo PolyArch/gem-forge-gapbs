@@ -261,14 +261,13 @@ public:
      */
     Timer t;
     t.Start();
-    EdgeList inEL, outEL;
+    typename CSRGraph<NodeID_, DestID_, invert>::InterPartEdgeList el;
     NodeID_ duplicated, original;
     while (f >> duplicated >> original) {
-      inEL.push_back(Edge(duplicated, original));
-      outEL.push_back(Edge(original, duplicated));
+      el.push_back(Edge(duplicated, original));
     }
 
-    g.setInterPartitionEdges(std::move(inEL), std::move(outEL));
+    g.setInterPartitionEdges(std::move(el));
 
     f.close();
     t.Stop();

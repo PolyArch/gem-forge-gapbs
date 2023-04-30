@@ -31,12 +31,13 @@ pageRankPushCSR(NodeID num_nodes, const ThreadWorkVecT thread_works,
                 NodeID *nodes,
 #endif
                 ScoreT *scores, ScoreT *next_scores,
-                EdgeIndexT *out_neigh_index, NodeID *out_edges) {
+                EdgeIndexT *out_neigh_index, NodeID *out_edges,
+                const NodeID *real_out_degrees) {
 
 #ifdef SHUFFLE_NODES
 
 #pragma omp parallel firstprivate(scores, out_neigh_index, out_edges,          \
-                                  next_scores, nodes)
+                                  real_out_degrees, next_scores, nodes)
   {
 
     auto tid = omp_get_thread_num();
@@ -52,7 +53,7 @@ pageRankPushCSR(NodeID num_nodes, const ThreadWorkVecT thread_works,
 #else
 
 #pragma omp parallel firstprivate(scores, out_neigh_index, out_edges,          \
-                                  next_scores)
+                                  real_out_degrees, next_scores)
   {
 
     auto tid = omp_get_thread_num();
@@ -84,7 +85,11 @@ pageRankPushCSR(NodeID num_nodes, const ThreadWorkVecT thread_works,
 #endif
 
       int64_t out_degree = out_end - out_begin;
-      ScoreT outgoing_contrib = score / out_degree;
+
+#pragma ss stream_name "gap.pr_push.atomic.real_out_degree.ld"
+      const int64_t real_out_degree = real_out_degrees[n];
+      ScoreT outgoing_contrib = score / real_out_degree;
+
       for (int64_t j = 0; j < out_degree; ++j) {
 
 #pragma ss stream_name "gap.pr_push.atomic.out_v.ld"
@@ -409,20 +414,20 @@ pageRankPushUpdate(NodeID num_nodes, ScoreT *scores, ScoreT *next_scores,
   return error;
 }
 
-__attribute__((noinline)) void pageRankPushInterPartUpdate(
-    int64_t num_inter_part_edges,
-    const EdgePair<NodeID, NodeID> *inter_part_in_edges,
-    const EdgePair<NodeID, NodeID> *inter_part_out_edges, ScoreT *scores) {
+__attribute__((noinline)) void
+pageRankPushInterPartUpdate(int64_t num_inter_part_edges,
+                            const EdgePair<NodeID, NodeID> *inter_part_edges,
+                            ScoreT *scores) {
 
 #pragma omp parallel for schedule(static)                                      \
-    firstprivate(num_inter_part_edges, inter_part_in_edges, scores)
+    firstprivate(num_inter_part_edges, inter_part_edges, scores)
   for (int64_t i = 0; i < num_inter_part_edges; ++i) {
 
 #pragma ss stream_name "gap.pr_push.inter_part_in.src.ld"
-    auto src = inter_part_in_edges[i].u;
+    auto src = inter_part_edges[i].u;
 
 #pragma ss stream_name "gap.pr_push.inter_part_in.dst.ld"
-    auto dst = inter_part_in_edges[i].v;
+    auto dst = inter_part_edges[i].v;
 
 #pragma ss stream_name "gap.pr_push.inter_part_in.score.ld"
     ScoreT score = scores[src];
@@ -432,14 +437,14 @@ __attribute__((noinline)) void pageRankPushInterPartUpdate(
   }
 
 #pragma omp parallel for schedule(static)                                      \
-    firstprivate(num_inter_part_edges, inter_part_in_edges, scores)
+    firstprivate(num_inter_part_edges, inter_part_edges, scores)
   for (int64_t i = 0; i < num_inter_part_edges; ++i) {
 
 #pragma ss stream_name "gap.pr_push.inter_part_out.src.ld"
-    auto src = inter_part_in_edges[i].v;
+    auto src = inter_part_edges[i].v;
 
 #pragma ss stream_name "gap.pr_push.inter_part_out.dst.ld"
-    auto dst = inter_part_in_edges[i].u;
+    auto dst = inter_part_edges[i].u;
 
 #pragma ss stream_name "gap.pr_push.inter_part_out.score.ld"
     ScoreT score = scores[src];
@@ -449,28 +454,21 @@ __attribute__((noinline)) void pageRankPushInterPartUpdate(
   }
 }
 
-__attribute__((noinline)) void pageRankPullUpdate(NodeID num_nodes,
-                                                  ScoreT *scores,
-                                                  ScoreT *out_contribs,
-                                                  EdgeIndexT *out_neigh_index) {
+__attribute__((noinline)) void
+pageRankPullUpdate(NodeID num_nodes, ScoreT *scores, ScoreT *out_contribs,
+                   const NodeID *real_out_degrees) {
 
 #pragma omp parallel for schedule(static)                                      \
-    firstprivate(num_nodes, scores, out_contribs, out_neigh_index)
+    firstprivate(num_nodes, scores, out_contribs, real_out_degrees)
   for (NodeID n = 0; n < num_nodes; n++) {
-
-    auto *out_neigh_ptr = out_neigh_index + n;
 
 #pragma ss stream_name "gap.pr_pull.update.score.ld"
     ScoreT score = scores[n];
 
-#pragma ss stream_name "gap.pr_pull.update.out_begin.ld"
-    EdgeIndexT out_begin = out_neigh_ptr[0];
+#pragma ss stream_name "gap.pr_pull.update.out_degree.ld"
+    const NodeID real_out_degree = real_out_degrees[n];
 
-#pragma ss stream_name "gap.pr_pull.update.out_end.ld"
-    EdgeIndexT out_end = out_neigh_ptr[1];
-
-    int64_t out_degree = out_end - out_begin;
-    ScoreT contrib = score / out_degree;
+    ScoreT contrib = score / real_out_degree;
 
 #pragma ss stream_name "gap.pr_pull.update.out_contrib.st"
     out_contribs[n] = contrib;
