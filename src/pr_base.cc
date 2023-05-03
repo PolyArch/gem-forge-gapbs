@@ -122,59 +122,15 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
 #endif
 
 #ifdef GEM_FORGE
+
+  g.declareNUCARegions(graph_partition);
+
   m5_stream_nuca_region("gap.pr.score0", scores_data0, sizeof(ScoreT),
                         num_nodes, 0, 0);
   m5_stream_nuca_region("gap.pr.score1", scores_data1, sizeof(ScoreT),
                         num_nodes, 0, 0);
-  m5_stream_nuca_align(scores_data0, scores_data1, 0);
-
-  m5_stream_nuca_region("gap.pr.out_neigh_index", out_neigh_index,
-                        sizeof(EdgeIndexT), num_nodes, 0, 0);
-  m5_stream_nuca_region("gap.pr.out_edge", out_edges, sizeof(NodeID), num_edges,
-                        0, 0);
-  m5_stream_nuca_align(out_neigh_index, scores_data1, 0);
-
-  m5_stream_nuca_region("gap.real_out_degree", g.getRealOutDegrees(),
-                        sizeof(*g.getRealOutDegrees()), num_nodes, 0, 0);
-  m5_stream_nuca_align(g.getRealOutDegrees(), scores_data1, 0);
-
-  if (g.hasInterPartitionEdges()) {
-    const auto &inter_part_edges = g.getInterPartEdges();
-    m5_stream_nuca_region("gap.inter_part_edges", inter_part_edges.data(),
-                          sizeof(inter_part_edges[0]), inter_part_edges.size(),
-                          0, 0);
-  }
-
-  if (graph_partition) {
-    // Inform the GemForge about the partitioned graph.
-    g.setStreamNUCAPartition(scores_data1, g.node_parts);
-    g.setStreamNUCAPartition(out_edges, g.out_edge_parts);
-  } else {
-    m5_stream_nuca_set_property(
-        scores_data1, STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
-        roundUp(num_nodes / 64, 128 / sizeof(NodeID)) * sizeof(ScoreT));
-    m5_stream_nuca_align(out_edges, scores_data1,
-                         m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
-    m5_stream_nuca_align(out_edges, out_neigh_index,
-                         m5_stream_nuca_encode_csr_index());
-  }
-  if (in_neigh_index != out_neigh_index) {
-    // This is directed graph.
-    m5_stream_nuca_region("gap.pr.in_neigh_index", in_neigh_index,
-                          sizeof(EdgeIndexT), num_nodes, 0, 0);
-    m5_stream_nuca_region("gap.pr.in_edge", in_edges, sizeof(NodeID), num_edges,
-                          0, 0);
-    m5_stream_nuca_align(in_neigh_index, scores_data1, 0);
-    if (graph_partition) {
-      // Inform the GemForge about the partitioned graph.
-      g.setStreamNUCAPartition(in_edges, g.in_edge_parts);
-    } else {
-      m5_stream_nuca_align(in_edges, scores_data1,
-                           m5_stream_nuca_encode_ind_align(0, sizeof(NodeID)));
-      m5_stream_nuca_align(in_edges, in_neigh_index,
-                           m5_stream_nuca_encode_csr_index());
-    }
-  }
+  m5_stream_nuca_align(scores_data0, g.out_neigh_index(), 0);
+  m5_stream_nuca_align(scores_data1, g.out_neigh_index(), 0);
 
   // Do a remap first.
   m5_stream_nuca_remap();

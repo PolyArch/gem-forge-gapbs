@@ -157,11 +157,6 @@ void gf_warm_array(const char *name, void *buffer, uint64_t totalBytes) {
       }
     }
   }
-  // #pragma omp parallel for firstprivate(buffer)
-  //   for (uint64_t i = 0; i < cachedBytes; i += 64) {
-  //     __attribute__((unused)) volatile uint8_t data =
-  //         reinterpret_cast<uint8_t *>(buffer)[i];
-  //   }
   printf("[GF_WARM] Region %s Warmed %.2f%%.\n", name,
          static_cast<float>(cachedBytes) / static_cast<float>(totalBytes) *
              100.f);

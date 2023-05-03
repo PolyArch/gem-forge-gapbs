@@ -432,6 +432,84 @@ public:
   InterPartEdgeList inter_part_edges;
   NodeID_ *real_in_degrees = nullptr;
   NodeID_ *real_out_degrees = nullptr;
+
+  // Specialize on set indirect alignment on edge types.
+  template <typename EdgeT>
+  void alignEdgesToVertices(EdgeT *const edges, EdgeT **const vertices) const {
+    m5_stream_nuca_align(
+        edges, vertices,
+        m5_stream_nuca_encode_ind_align(offsetof(EdgeT, v), sizeof(EdgeT::v)));
+  }
+  template <>
+  void alignEdgesToVertices<NodeID_>(NodeID_ *const edges,
+                                     NodeID_ **const vertices) const {
+    m5_stream_nuca_align(edges, vertices,
+                         m5_stream_nuca_encode_ind_align(0, sizeof(NodeID_)));
+  }
+
+  void declareNUCARegions(bool enableNonUniformPartition) const {
+#ifdef GEM_FORGE
+
+    const auto num_nodes = this->num_nodes();
+    const auto num_edges = this->num_edges_directed();
+
+    m5_stream_nuca_region("gap.out_neigh_index", this->out_neigh_index(),
+                          sizeof(*this->out_neigh_index()), num_nodes, 0, 0);
+
+#define AlignVertexArray(name, ptr)                                            \
+  m5_stream_nuca_region(name, ptr, sizeof(*ptr), num_nodes, 0, 0);             \
+  m5_stream_nuca_align(ptr, this->out_neigh_index(), 0);
+
+    AlignVertexArray("gap.out_neigh_index_offset", out_neigh_index_offset());
+
+    AlignVertexArray("gap.real_out_degree", getRealOutDegrees());
+
+    m5_stream_nuca_region("gap.out_edge", out_edges(), sizeof(*out_edges()),
+                          num_edges, 0, 0);
+
+    if (hasInterPartitionEdges()) {
+      const auto &inter_part_edges = getInterPartEdges();
+      m5_stream_nuca_region("gap.inter_part_edges", inter_part_edges.data(),
+                            sizeof(inter_part_edges[0]),
+                            inter_part_edges.size(), 0, 0);
+    }
+
+    if (enableNonUniformPartition) {
+      // Inform the GemForge about the partitioned graph.
+      setStreamNUCAPartition(out_neigh_index(), node_parts);
+      setStreamNUCAPartition(out_edges(), out_edge_parts);
+    } else {
+      m5_stream_nuca_set_property(
+          out_neigh_index(), STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+          roundUp(num_nodes / 64, 128 / sizeof(NodeID_)) *
+              sizeof(*out_neigh_index()));
+      alignEdgesToVertices(out_edges(), out_neigh_index());
+      m5_stream_nuca_align(out_edges(), out_neigh_index(),
+                           m5_stream_nuca_encode_csr_index());
+    }
+
+    if (in_neigh_index() != out_neigh_index()) {
+      // This is directed graph.
+      AlignVertexArray("gap.in_neigh_index", in_neigh_index());
+      AlignVertexArray("gap.in_neigh_index_offset", in_neigh_index_offset());
+
+      m5_stream_nuca_region("gap.in_edge", in_edges(), sizeof(*in_edges()),
+                            num_edges, 0, 0);
+
+      if (enableNonUniformPartition) {
+        // Inform the GemForge about the partitioned graph.
+        setStreamNUCAPartition(in_edges(), in_edge_parts);
+      } else {
+        alignEdgesToVertices(in_edges(), in_neigh_index());
+        m5_stream_nuca_align(in_edges(), in_neigh_index(),
+                             m5_stream_nuca_encode_csr_index());
+      }
+    }
+
+#undef AlignVertexArray
+
+#endif
+  }
 };
 
 #endif // GRAPH_H_

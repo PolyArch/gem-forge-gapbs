@@ -79,13 +79,7 @@ void PBFS(const Graph &g, NodeID source, pvector<CountT> &path_counts,
           }
           if (depths[v] == depth) {
             succ.set_bit_atomic(&v - g_out_start);
-#ifdef __clang__
-            // __atomic_fetch_fadd() is added in GEM_FORGE.
             __atomic_fetch_fadd(&path_counts[v], uPathCount, __ATOMIC_RELAXED);
-#else
-#pragma omp atomic
-            path_counts[v] += uPathCount;
-#endif
           }
         }
       }
