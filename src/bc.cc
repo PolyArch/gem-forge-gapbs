@@ -168,7 +168,7 @@ PBFS(const Graph &g, NodeID source, NodeID *depths, CountT *path_counts,
 #endif
         };
 
-        csrPush<false, NodeID>(u, out_neigh_index, pushOp);
+        csrIterate<false>(u, out_neigh_index, pushOp);
       }
 
 // Move to global queue.
@@ -284,7 +284,7 @@ computeScoresPush(const Graph &g, CountT *path_counts, NodeID *depths,
       /**
        * Since these are visited vertices, the degree must be > 0.
        */
-      csrPush<true, NodeID>(u, in_neigh_index, pushOp);
+      csrIterate<true>(u, in_neigh_index, pushOp);
     }
   }
 }

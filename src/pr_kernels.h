@@ -37,7 +37,7 @@ pageRankPushCSR(NodeID num_nodes, const ThreadWorkVecT thread_works,
 #ifdef SHUFFLE_NODES
 
 #pragma omp parallel firstprivate(scores, out_neigh_index, out_edges,          \
-                                  real_out_degrees, next_scores, nodes)
+                                      real_out_degrees, next_scores, nodes)
   {
 
     auto tid = omp_get_thread_num();
@@ -53,7 +53,7 @@ pageRankPushCSR(NodeID num_nodes, const ThreadWorkVecT thread_works,
 #else
 
 #pragma omp parallel firstprivate(scores, out_neigh_index, out_edges,          \
-                                  real_out_degrees, next_scores)
+                                      real_out_degrees, next_scores)
   {
 
     auto tid = omp_get_thread_num();
@@ -67,38 +67,20 @@ pageRankPushCSR(NodeID num_nodes, const ThreadWorkVecT thread_works,
 
 #endif // SHUFFLE_NODES
 
-      EdgeIndexT *out_neigh_ptr = out_neigh_index + n;
-
 #pragma ss stream_name "gap.pr_push.atomic.score.ld"
       ScoreT score = scores[n];
-
-#pragma ss stream_name "gap.pr_push.atomic.out_begin.ld"
-      EdgeIndexT out_begin = out_neigh_ptr[0];
-
-#pragma ss stream_name "gap.pr_push.atomic.out_end.ld"
-      EdgeIndexT out_end = out_neigh_ptr[1];
-
-#ifdef USE_EDGE_INDEX_OFFSET
-      NodeID *out_ptr = out_edges + out_begin;
-#else
-      NodeID *out_ptr = out_begin;
-#endif
-
-      int64_t out_degree = out_end - out_begin;
 
 #pragma ss stream_name "gap.pr_push.atomic.real_out_degree.ld"
       const int64_t real_out_degree = real_out_degrees[n];
       ScoreT outgoing_contrib = score / real_out_degree;
 
-      for (int64_t j = 0; j < out_degree; ++j) {
-
-#pragma ss stream_name "gap.pr_push.atomic.out_v.ld"
-        NodeID v = out_ptr[j];
-
+      auto pushOp = [&](NodeID v) -> void {
 #pragma ss stream_name "gap.pr_push.atomic.next.at"
         __atomic_fetch_fadd(next_scores + v, outgoing_contrib,
                             __ATOMIC_RELAXED);
-      }
+      };
+
+      csrIterate<false>(n, out_neigh_index, pushOp);
     }
   }
 }
@@ -122,7 +104,7 @@ __attribute__((noinline)) void pageRankPushAdjList(
 #ifdef SHUFFLE_NODES
 
 #pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(                       \
-    scores, next_scores, nodes, adj_list, degrees)
+        scores, next_scores, nodes, adj_list, degrees)
   for (int64_t i = 0; i < num_nodes; i++) {
 
 #pragma ss stream_name "gap.pr_push.atomic.node.ld"
@@ -131,7 +113,7 @@ __attribute__((noinline)) void pageRankPushAdjList(
 #else
 
 #pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(scores, next_scores,   \
-                                                        adj_list, degrees)
+                                                            adj_list, degrees)
   for (int64_t i = 0; i < num_nodes; i++) {
 
     int64_t n = i;
@@ -189,7 +171,7 @@ pageRankPushAdjListMixCSR(AdjGraphMixCSRT &graph,
 #ifdef SHUFFLE_NODES
 
 #pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(                       \
-    scores, next_scores, nodes, adj_list, degrees)
+        scores, next_scores, nodes, adj_list, degrees)
   for (int64_t i = 0; i < num_nodes; i++) {
 
 #pragma ss stream_name "gap.pr_push.atomic.node.ld"
@@ -198,7 +180,7 @@ pageRankPushAdjListMixCSR(AdjGraphMixCSRT &graph,
 #else
 
 #pragma omp parallel for OMP_SCHEDULE_TYPE firstprivate(scores, next_scores,   \
-                                                        adj_list, degrees)
+                                                            adj_list, degrees)
   for (int64_t i = 0; i < num_nodes; i++) {
 
     int64_t n = i;
@@ -391,8 +373,8 @@ pageRankPushUpdate(NodeID num_nodes, ScoreT *scores, ScoreT *next_scores,
 
   ScoreT error = 0;
 
-#pragma omp parallel for reduction(+ : error) schedule(static) \
-  firstprivate(num_nodes, scores, next_scores, base_score, kDamp)
+#pragma omp parallel for reduction(+ : error) schedule(static)                 \
+    firstprivate(num_nodes, scores, next_scores, base_score, kDamp)
   for (NodeID n = 0; n < num_nodes; n++) {
 
 #pragma ss stream_name "gap.pr_push.update.score.ld"
@@ -486,47 +468,31 @@ pageRankPullCSR(NodeID num_nodes,
   ScoreT error = 0;
 
 #ifdef SHUFFLE_NODES
-#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+ : error) \
-    firstprivate(num_nodes, nodes, scores, out_contribs, in_neigh_index, in_edges, base_score, kDamp)
+#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+ : error)                \
+    firstprivate(num_nodes, nodes, scores, out_contribs, in_neigh_index,       \
+                     in_edges, base_score, kDamp)
   for (NodeID i = 0; i < num_nodes; i++) {
 
     NodeID u = nodes[i];
 
 #else
 
-#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+ : error) \
-    firstprivate(num_nodes, scores, out_contribs, in_neigh_index, in_edges, base_score, kDamp)
+#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+ : error)                \
+    firstprivate(num_nodes, scores, out_contribs, in_neigh_index, in_edges,    \
+                     base_score, kDamp)
   for (NodeID u = 0; u < num_nodes; u++) {
 
 #endif
 
-    auto *in_neigh_ptr = in_neigh_index + u;
-
-#pragma ss stream_name "gap.pr_pull.rdc.in_begin.ld"
-    EdgeIndexT in_begin = in_neigh_ptr[0];
-
-#pragma ss stream_name "gap.pr_pull.rdc.in_end.ld"
-    EdgeIndexT in_end = in_neigh_ptr[1];
-
-    int64_t in_degree = in_end - in_begin;
-
-#ifdef USE_EDGE_INDEX_OFFSET
-    NodeID *in_ptr = in_edges + in_begin;
-#else
-    NodeID *in_ptr = in_begin;
-#endif
-
     ScoreT incoming_total = 0;
-    for (int64_t j = 0; j < in_degree; ++j) {
 
-#pragma ss stream_name "gap.pr_pull.rdc.v.ld"
-      NodeID v = in_ptr[j];
-
+    auto pullOp = [&](NodeID v) -> void {
 #pragma ss stream_name "gap.pr_pull.rdc.contrib.ld"
       ScoreT contrib = out_contribs[v];
-
       incoming_total += contrib;
-    }
+    };
+
+    csrIterate<false>(u, in_neigh_index, pullOp);
 
 #pragma ss stream_name "gap.pr_pull.rdc.score.ld"
     ScoreT score = scores[u];
@@ -558,8 +524,8 @@ __attribute__((noinline)) ScoreT pageRankPullAdjList(AdjGraph &graph,
 
 #ifdef SHUFFLE_NODES
 
-#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+:error) firstprivate(                       \
-    scores, out_contribs, nodes, num_nodes, adj_list, base_score, kDamp)
+#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+ : error) firstprivate(  \
+        scores, out_contribs, nodes, num_nodes, adj_list, base_score, kDamp)
   for (int64_t i = 0; i < num_nodes; i++) {
 
 #pragma ss stream_name "gap.pr_pull.rdc.node.ld"
@@ -567,8 +533,8 @@ __attribute__((noinline)) ScoreT pageRankPullAdjList(AdjGraph &graph,
 
 #else
 
-#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+:error) firstprivate(                       \
-    scores, out_contribs, num_nodes, adj_list, base_score, kDamp)
+#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+ : error)                \
+    firstprivate(scores, out_contribs, num_nodes, adj_list, base_score, kDamp)
   for (int64_t i = 0; i < num_nodes; i++) {
 
     int64_t n = i;
@@ -644,8 +610,8 @@ pageRankPullSingleAdjList(AdjGraphSingleAdjListT &graph,
 
 #ifdef SHUFFLE_NODES
 
-#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+:error) firstprivate(                       \
-    scores, out_contribs, nodes, num_nodes, adj_list, base_score, kDamp)
+#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+ : error) firstprivate(  \
+        scores, out_contribs, nodes, num_nodes, adj_list, base_score, kDamp)
   for (int64_t i = 0; i < num_nodes; i++) {
 
 #pragma ss stream_name "gap.pr_pull.rdc.node.ld"
@@ -653,8 +619,8 @@ pageRankPullSingleAdjList(AdjGraphSingleAdjListT &graph,
 
 #else
 
-#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+:error) firstprivate(                       \
-    scores, out_contribs, num_nodes, adj_list, base_score, kDamp)
+#pragma omp parallel for OMP_SCHEDULE_TYPE reduction(+ : error)                \
+    firstprivate(scores, out_contribs, num_nodes, adj_list, base_score, kDamp)
   for (int64_t i = 0; i < num_nodes; i++) {
 
     int64_t n = i;

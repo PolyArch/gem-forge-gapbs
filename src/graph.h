@@ -386,17 +386,19 @@ public:
   }
 
   void initRealDegrees() {
-    this->real_in_degrees = alignedAllocAndTouch<NodeID_>(this->num_nodes());
+    this->real_out_degrees = alignedAllocAndTouch<NodeID_>(this->num_nodes());
+#pragma clang loop vectorize(disable)
     for (NodeID_ u = 0; u < this->num_nodes(); ++u) {
-      this->real_in_degrees[u] = this->in_degree(u);
+      this->real_out_degrees[u] = this->out_degree(u);
     }
     if (this->in_neighbors_ == this->out_neighbors_) {
       // Undirect graph.
-      this->real_out_degrees = this->real_in_degrees;
+      this->real_in_degrees = this->real_out_degrees;
     } else {
-      this->real_out_degrees = alignedAllocAndTouch<NodeID_>(this->num_nodes());
+      this->real_in_degrees = alignedAllocAndTouch<NodeID_>(this->num_nodes());
+#pragma clang loop vectorize(disable)
       for (NodeID_ u = 0; u < this->num_nodes(); ++u) {
-        this->real_out_degrees[u] = this->out_degree(u);
+        this->real_in_degrees[u] = this->in_degree(u);
       }
     }
   }
@@ -519,8 +521,8 @@ public:
 /**
  * @brief Template to perform CSR Push traverse on unweighted graph.
  */
-template <bool PositiveDegree, typename NodeID_, typename PushOp>
-inline void csrPush(NodeID_ u, NodeID_ **neigh_index, PushOp pushOp) {
+template <bool PositiveDegree, typename U, typename NodeID, typename PushOp>
+inline void csrIterate(U u, NodeID **neigh_index, PushOp pushOp) {
 
   auto neigh_ptr = neigh_index + u;
 
