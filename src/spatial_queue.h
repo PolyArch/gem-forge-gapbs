@@ -28,7 +28,9 @@ public:
 
     this->data = alignedAllocAndTouch<T>(num_queues * queue_capacity);
     this->meta = alignedAllocAndTouch<QueueMetaInfo>(num_queues);
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
     for (int i = 0; i < this->num_queues; ++i) {
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
       for (int j = 0; j < this->num_bins; ++j) {
         this->meta[i].size[j] = 0;
       }

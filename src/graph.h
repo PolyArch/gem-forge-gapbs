@@ -331,9 +331,9 @@ public:
       auto in_end = this->in_index_[node_acc];
       in_acc = in_end - in_begin;
       // Adjust to bytes.
-      this->node_parts.push_back(node_acc * sizeof(NodeID_));
-      this->in_edge_parts.push_back(in_acc * sizeof(DestID_));
-      this->out_edge_parts.push_back(out_acc * sizeof(DestID_));
+      this->node_parts.push_back(node_acc);
+      this->in_edge_parts.push_back(in_acc);
+      this->out_edge_parts.push_back(out_acc);
     }
     assert(node_acc == this->num_nodes_);
   }
@@ -436,15 +436,19 @@ public:
   // Specialize on set indirect alignment on edge types.
   template <typename EdgeT>
   void alignEdgesToVertices(EdgeT *const edges, EdgeT **const vertices) const {
+#ifdef GEM_FORGE
     m5_stream_nuca_align(
         edges, vertices,
         m5_stream_nuca_encode_ind_align(offsetof(EdgeT, v), sizeof(EdgeT::v)));
+#endif
   }
   template <>
   void alignEdgesToVertices<NodeID_>(NodeID_ *const edges,
                                      NodeID_ **const vertices) const {
+#ifdef GEM_FORGE
     m5_stream_nuca_align(edges, vertices,
                          m5_stream_nuca_encode_ind_align(0, sizeof(NodeID_)));
+#endif
   }
 
   void declareNUCARegions(bool enableNonUniformPartition) const {
@@ -453,8 +457,8 @@ public:
     const auto num_nodes = this->num_nodes();
     const auto num_edges = this->num_edges_directed();
 
-    m5_stream_nuca_region("gap.out_neigh_index", this->out_neigh_index(),
-                          sizeof(*this->out_neigh_index()), num_nodes, 0, 0);
+    m5_stream_nuca_region("gap.out_neigh_index", out_neigh_index(),
+                          sizeof(*out_neigh_index()), num_nodes, 0, 0);
 
 #define AlignVertexArray(name, ptr)                                            \
   m5_stream_nuca_region(name, ptr, sizeof(*ptr), num_nodes, 0, 0);             \

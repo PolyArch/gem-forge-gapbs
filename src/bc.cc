@@ -14,10 +14,14 @@
 #include "graph.h"
 #include "platform_atomics.h"
 #include "pvector.h"
+#include "sized_array.h"
 #include "sliding_queue.h"
 #include "source_generator.h"
+#include "spatial_queue.h"
 #include "timer.h"
 #include "util.h"
+
+#include "immintrin.h"
 
 #ifdef GEM_FORGE
 #include "gem5/m5ops.h"
@@ -52,39 +56,156 @@ using namespace std;
 typedef float ScoreT;
 typedef double CountT;
 
-void PBFS(const Graph &g, NodeID source, pvector<CountT> &path_counts,
-          Bitmap &succ, vector<SlidingQueue<NodeID>::iterator> &depth_index,
-          SlidingQueue<NodeID> &queue) {
-  pvector<NodeID> depths(g.num_nodes(), -1);
+const NodeID InitDepth = -1;
+
+__attribute__((noinline)) void
+PBFS(const Graph &g, NodeID source, NodeID *depths, CountT *path_counts,
+
+#ifdef USE_SPATIAL_QUEUE
+     SpatialQueue<NodeID> &squeue,
+#endif
+
+     vector<SlidingQueue<NodeID>::iterator> &depth_index,
+     SlidingQueue<NodeID> &queue) {
+
   depths[source] = 0;
   path_counts[source] = 1;
   queue.push_back(source);
-  depth_index.push_back(queue.begin());
   queue.slide_window();
-  const NodeID *g_out_start = g.out_neigh(0).begin();
-#pragma omp parallel
+
+  auto num_nodes = g.num_nodes();
+
+  auto out_neigh_index = g.out_neigh_index();
+
+#pragma omp parallel firstprivate(num_nodes, depths, path_counts,              \
+                                      out_neigh_index)
   {
+
+#ifdef USE_SPATIAL_QUEUE
+    const auto squeue_data = squeue.data;
+    const auto squeue_meta = squeue.meta;
+    const auto squeue_capacity = squeue.queue_capacity;
+    const auto squeue_hash_div = squeue.hash_div;
+    const auto squeue_hash_mask = squeue.hash_mask;
+#else
+    SizedArray<NodeID> lqueue(num_nodes);
+#endif
+
     NodeID depth = 0;
-    QueueBuffer<NodeID> lqueue(queue);
+
     while (!queue.empty()) {
       depth++;
-#pragma omp for schedule(dynamic, 64) nowait
-      for (auto q_iter = queue.begin(); q_iter < queue.end(); q_iter++) {
-        NodeID u = *q_iter;
-        CountT uPathCount = path_counts[u];
-        for (NodeID &v : g.out_neigh(u)) {
+
+      auto q = queue.begin();
+      auto N = queue.end() - q;
+
+#pragma omp for schedule(static) nowait
+      for (int64_t i = 0; i < N; ++i) {
+
+#pragma ss stream_name "gap.bc.bfs.u.ld"
+        NodeID u = q[i];
+
+#pragma ss stream_name "gap.bc.bfs.path_u.ld"
+        CountT path_u = path_counts[u];
+
+        auto out_neigh_ptr = out_neigh_index + u;
+
+#pragma ss stream_name "gap.bc.bfs.out_begin.ld"
+        auto out_begin = out_neigh_ptr[0];
+
+#pragma ss stream_name "gap.bc.bfs.out_end.ld"
+        auto out_end = out_neigh_ptr[1];
+
+        int64_t degree = out_end - out_begin;
+
+        for (int64_t j = 0; j < degree; ++j) {
+
+#pragma ss stream_name "gap.bc.bfs.v.ld"
+          NodeID v = out_begin[j];
+
+#ifndef IN_CORE_IMPL
+
+          NodeID oldDepth = InitDepth;
+
+#pragma ss stream_name "gap.bc.bfs.swap.at"
+          bool swapped = __atomic_compare_exchange_n(
+              &depths[v], &oldDepth, depth, false /* weak */, __ATOMIC_RELAXED,
+              __ATOMIC_RELAXED);
+
+          bool updatePath = swapped || oldDepth == depth;
+          if (updatePath) {
+#pragma ss stream_name "gap.bc.bfs.cnt.at"
+            __atomic_fetch_fadd(&path_counts[v], path_u, __ATOMIC_RELAXED);
+          }
+
+          if (swapped) {
+
+#ifdef USE_SPATIAL_QUEUE
+
+            /**
+             * Hash into the spatial queue.
+             */
+            auto queue_idx = (v / squeue_hash_div) & squeue_hash_mask;
+
+            // printf("Enqueue %d to %d.\n", v, queue_idx);
+
+#pragma ss stream_name "gap.bc.bfs.enque.at"
+            auto queue_loc = __atomic_fetch_add(&squeue_meta[queue_idx].size[0],
+                                                1, __ATOMIC_RELAXED);
+
+#pragma ss stream_name "gap.bc.bfs.enque.st"
+            squeue_data[queue_idx * squeue_capacity + queue_loc] = v;
+
+#else
+
+#pragma ss stream_name "gap.bc.bfs.enque.at"
+            auto tail =
+                __atomic_fetch_add(&lqueue.num_elements, 1, __ATOMIC_RELAXED);
+
+#pragma ss stream_name "gap.bc.bfs.enque.st"
+            lqueue.buffer[tail] = v;
+
+#endif
+          }
+
+#else
+          /// Optimized for In-Core. This is the original implementation.
           if ((depths[v] == -1) &&
-              (compare_and_swap(depths[v], static_cast<NodeID>(-1), depth))) {
-            lqueue.push_back(v);
+              (compare_and_swap(depths[v], static_cast<NodeID>(InitDepth),
+                                depth))) {
+            lqueue.buffer[lqueue.num_elements++] = v;
           }
           if (depths[v] == depth) {
-            succ.set_bit_atomic(&v - g_out_start);
-            __atomic_fetch_fadd(&path_counts[v], uPathCount, __ATOMIC_RELAXED);
+            __atomic_fetch_fadd(&path_counts[v], path_u, __ATOMIC_RELAXED);
           }
+#endif
         }
       }
-      lqueue.flush();
+
+// Move to global queue.
+#ifdef USE_SPATIAL_QUEUE
+
 #pragma omp barrier
+
+#pragma omp for schedule(static)
+      for (int queue_idx = 0; queue_idx < squeue.num_queues; ++queue_idx) {
+        auto squeue_size = squeue.size(queue_idx, 0);
+        if (squeue_size > 0) {
+          // printf("Depth %d SpatialQueue %d Size %d.\n", depth, queue_idx,
+          //        squeue.size(queue_idx, 0));
+          queue.append(squeue.data + queue_idx * squeue.queue_capacity,
+                       squeue_size);
+          squeue.clear(queue_idx, 0);
+        }
+      }
+
+#else
+      queue.append(lqueue.begin(), lqueue.size());
+      lqueue.clear();
+
+#pragma omp barrier
+#endif
+
 #pragma omp single
       {
         depth_index.push_back(queue.begin());
@@ -93,23 +214,220 @@ void PBFS(const Graph &g, NodeID source, pvector<CountT> &path_counts,
     }
   }
   depth_index.push_back(queue.begin());
+  // for (int i = 0; i + 1 < depth_index.size(); ++i) {
+  //   auto lhs = depth_index[i];
+  //   auto rhs = depth_index[i + 1];
+  //   printf("DepthIndex %d %ld %p %p.\n", i, rhs - lhs, lhs, rhs);
+  // }
+}
+
+__attribute__((noinline)) void
+computeScoresPull(const Graph &g, CountT *path_counts, NodeID *depths,
+                  ScoreT *scores, ScoreT *deltas,
+                  vector<SlidingQueue<NodeID>::iterator> &depth_index) {
+
+  int n = depth_index.size();
+  for (int d = n - 3; d >= 0; d--) {
+#pragma omp parallel for schedule(static)                                      \
+    firstprivate(d, path_counts, depths, scores, deltas)
+    for (auto it = depth_index[d]; it < depth_index[d + 1]; it++) {
+      NodeID u = *it;
+      ScoreT delta_u = 0;
+      CountT path_counts_u = path_counts[u];
+      for (NodeID &v : g.out_neigh(u)) {
+        if (depths[v] == d + 1) {
+          delta_u += (path_counts_u / path_counts[v]) * (1 + deltas[v]);
+        }
+      }
+      deltas[u] = delta_u;
+      scores[u] += delta_u;
+    }
+  }
+}
+
+__attribute__((noinline)) void
+computeScoresPush(const Graph &g, CountT *path_counts, NodeID *depths,
+                  ScoreT *scores, ScoreT *deltas,
+                  vector<SlidingQueue<NodeID>::iterator> &depth_index) {
+
+  auto in_neigh_index = g.in_neigh_index();
+
+  int depth_index_n = depth_index.size();
+  for (int d = depth_index_n - 2; d > 0; d--) {
+
+    auto lhs = depth_index[d];
+    auto rhs = depth_index[d + 1];
+    auto cnt = rhs - lhs;
+
+#pragma omp parallel for schedule(static)                                      \
+    firstprivate(d, path_counts, depths, scores, deltas, lhs, in_neigh_index)
+    for (int64_t i = 0; i < cnt; ++i) {
+
+#pragma ss stream_name "gap.bc.score.u.ld"
+      NodeID u = lhs[i];
+
+#pragma ss stream_name "gap.bc.score.path_u.ld"
+      CountT path_counts_u = path_counts[u];
+
+#pragma ss stream_name "gap.bc.score.delta_u.ld"
+      ScoreT delta_u = deltas[u];
+
+      auto in_neigh_ptr = in_neigh_index + u;
+
+#pragma ss stream_name "gap.bc.score.in_begin.ld"
+      auto in_begin = in_neigh_ptr[0];
+
+#pragma ss stream_name "gap.bc.score.in_end.ld"
+      auto in_end = in_neigh_ptr[1];
+
+      int64_t degree = in_end - in_begin;
+
+      /**
+       * Since these are visited vertices, the degree must be > 0.
+       */
+      int64_t j = 0;
+      while (true) {
+
+#pragma ss stream_name "gap.bc.score.v.ld"
+        NodeID v = in_begin[j];
+
+#pragma ss stream_name "gap.bc.score.depth_v.ld"
+        auto depth_v = depths[v];
+
+        if (depth_v == d - 1) {
+
+#pragma ss stream_name "gap.bc.score.path_v.ld"
+          CountT path_counts_v = path_counts[v];
+
+          auto value = (path_counts_v / path_counts_u) * (1 + delta_u);
+
+          //           printf("PathU %lf PathV %lf DeltaU %lf Value %lf.\n",
+          //           path_counts_u,
+          //                  path_counts_v, delta_u, value);
+
+#pragma ss stream_name "gap.bc.score.delta_v.at"
+          __atomic_fetch_fadd(deltas + v, value, __ATOMIC_RELAXED);
+
+#pragma ss stream_name "gap.bc.score.score_v.at"
+          __atomic_fetch_fadd(scores + v, value, __ATOMIC_RELAXED);
+        }
+
+        j++;
+        if (j >= degree) {
+          break;
+        }
+      }
+    }
+  }
+}
+
+__attribute__((noinline)) void normalizeScores(NodeID num_nodes,
+                                               ScoreT *scores) {
+
+  // normalize scores
+  ScoreT biggest_score = 0;
+
+#pragma omp parallel for schedule(static) reduction(max : biggest_score)       \
+    firstprivate(scores)
+  for (NodeID n = 0; n < num_nodes; n++) {
+    biggest_score = max(biggest_score, scores[n]);
+  }
+
+#pragma omp parallel for schedule(static) firstprivate(scores, biggest_score)
+  for (NodeID n = 0; n < num_nodes; n++) {
+    scores[n] = scores[n] / biggest_score;
+  }
+
+  printf("MaxScore %f.\n", biggest_score);
 }
 
 pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
-                        NodeID num_iters) {
+                        NodeID num_iters, int warm_cache = 2,
+                        int num_threads = 1, bool graph_partition = false) {
+
   Timer t;
   t.Start();
   pvector<ScoreT> scores(g.num_nodes(), 0);
   pvector<CountT> path_counts(g.num_nodes());
-  Bitmap succ(g.num_edges_directed());
+  pvector<NodeID> depths(g.num_nodes(), -1);
+  pvector<ScoreT> deltas(g.num_nodes(), 0);
   vector<SlidingQueue<NodeID>::iterator> depth_index;
   SlidingQueue<NodeID> queue(g.num_nodes());
   t.Stop();
   PrintStep("a", t.Seconds());
-  const NodeID *g_out_start = g.out_neigh(0).begin();
+
+  const auto num_nodes = g.num_nodes();
+
+#ifdef USE_SPATIAL_QUEUE
+  const int num_banks = 64;
+  const auto num_nodes_per_bank =
+      roundUp(num_nodes / num_banks, 128 / sizeof(NodeID));
+  const auto node_hash_mask = num_banks - 1;
+  const auto node_hash_div = num_nodes_per_bank;
+  SpatialQueue<NodeID> squeue(num_banks, 1 /* num_bins */, num_nodes_per_bank,
+                              node_hash_div, node_hash_mask);
+#endif
+
+#ifdef GEM_FORGE
+
+  g.declareNUCARegions(graph_partition);
+
+  m5_stream_nuca_region("gap.bc.score", scores.data(), sizeof(ScoreT),
+                        num_nodes, 0, 0);
+  m5_stream_nuca_region("gap.bc.path", path_counts.data(), sizeof(CountT),
+                        num_nodes, 0, 0);
+  m5_stream_nuca_region("gap.bc.depth", depths.data(), sizeof(NodeID),
+                        num_nodes, 0, 0);
+  m5_stream_nuca_region("gap.bc.deltas", deltas.data(), sizeof(ScoreT),
+                        num_nodes, 0, 0);
+  m5_stream_nuca_align(scores.data(), g.out_neigh_index(), 0);
+  m5_stream_nuca_align(path_counts.data(), g.out_neigh_index(), 0);
+  m5_stream_nuca_align(depths.data(), g.out_neigh_index(), 0);
+  m5_stream_nuca_align(deltas.data(), g.out_neigh_index(), 0);
+
+#ifdef USE_SPATIAL_QUEUE
+  m5_stream_nuca_region("gap.bc.squeue", squeue.data, sizeof(NodeID), num_nodes,
+                        0, 0);
+  m5_stream_nuca_region("gap.bc.squeue_meta", squeue.meta, sizeof(*squeue.meta),
+                        num_banks, 0, 0);
+  m5_stream_nuca_align(squeue.data, g.out_neigh_index(), 0);
+  m5_stream_nuca_align(squeue.meta, g.out_neigh_index(), num_nodes_per_bank);
+  m5_stream_nuca_set_property(squeue.meta,
+                              STREAM_NUCA_REGION_PROPERTY_INTERLEAVE,
+                              sizeof(*squeue.meta));
+#endif
+
+  m5_stream_nuca_remap();
+
+#endif
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
+#endif
+
+#ifdef GEM_FORGE
+  if (warm_cache > 0) {
+    gf_warm_array("scores", scores.data(), num_nodes * sizeof(scores[0]));
+    gf_warm_array("depth", depths.data(), num_nodes * sizeof(depths[0]));
+    gf_warm_array("delta", deltas.data(), num_nodes * sizeof(deltas[0]));
+    gf_warm_array("path", path_counts.data(),
+                  num_nodes * sizeof(path_counts[0]));
+    gf_warm_array("out_neigh_index", g.out_neigh_index(),
+                  num_nodes * sizeof(g.out_neigh_index()[0]));
+
+    if (warm_cache > 1) {
+      const auto num_edges = g.num_edges_directed();
+      gf_warm_array("out_edges", g.out_edges(),
+                    num_edges * sizeof(g.out_edges()[0]));
+    }
+
+    printf("Warm up done.\n");
+  }
+#endif
+
+  startThreads(num_threads);
+
+#ifdef GEM_FORGE
   m5_reset_stats(0, 0);
 #endif
 
@@ -117,16 +435,21 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
     NodeID source = sp.PickNext();
     cout << "source: " << source << endl;
     t.Start();
+    depths.fill(-1);
     path_counts.fill(0);
+    deltas.fill(0);
     depth_index.resize(0);
     queue.reset();
-    succ.reset();
 
 #ifdef GEM_FORGE
     m5_work_begin(0, 0);
 #endif
 
-    PBFS(g, source, path_counts, succ, depth_index, queue);
+    PBFS(g, source, depths.data(), path_counts.data(),
+#ifdef USE_SPATIAL_QUEUE
+         squeue,
+#endif
+         depth_index, queue);
 
 #ifdef GEM_FORGE
     m5_work_end(0, 0);
@@ -134,40 +457,29 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
 
     t.Stop();
     PrintStep("b", t.Seconds());
-    pvector<ScoreT> deltas(g.num_nodes(), 0);
+
     t.Start();
-    for (int d = depth_index.size() - 2; d >= 0; d--) {
+
 #ifdef GEM_FORGE
-      m5_work_begin(1, 0);
+    m5_work_begin(1, 0);
 #endif
-#pragma omp parallel for schedule(dynamic, 64)
-      for (auto it = depth_index[d]; it < depth_index[d + 1]; it++) {
-        NodeID u = *it;
-        ScoreT delta_u = 0;
-        CountT path_counts_u = path_counts[u];
-        for (NodeID &v : g.out_neigh(u)) {
-          if (succ.get_bit(&v - g_out_start)) {
-            delta_u += (path_counts_u / path_counts[v]) * (1 + deltas[v]);
-          }
-        }
-        deltas[u] = delta_u;
-        scores[u] += delta_u;
-      }
+
+#ifdef IN_CORE_IMPL
+    computeScoresPull(g, path_counts.data(), depths.data(), scores.data(),
+                      deltas.data(), depth_index);
+#else
+    computeScoresPush(g, path_counts.data(), depths.data(), scores.data(),
+                      deltas.data(), depth_index);
+#endif
+
 #ifdef GEM_FORGE
-      m5_work_end(1, 0);
+    m5_work_end(1, 0);
 #endif
-    }
     t.Stop();
     PrintStep("p", t.Seconds());
   }
-  // normalize scores
-  ScoreT biggest_score = 0;
-#pragma omp parallel for reduction(max : biggest_score)
-  for (NodeID n = 0; n < g.num_nodes(); n++)
-    biggest_score = max(biggest_score, scores[n]);
-#pragma omp parallel for
-  for (NodeID n = 0; n < g.num_nodes(); n++)
-    scores[n] = scores[n] / biggest_score;
+
+  normalizeScores(num_nodes, scores.data());
 
 #ifdef GEM_FORGE
   m5_detail_sim_end();
@@ -261,7 +573,9 @@ int main(int argc, char *argv[]) {
     return -1;
 
   if (cli.num_threads() != -1) {
-    omp_set_num_threads(cli.num_threads());
+    printf("NumThreads = %d.\n", cli.num_threads());
+    // It begins with 1 thread.
+    omp_set_num_threads(1);
   }
 
   if (cli.num_iters() > 1 && cli.start_vertex() != -1)
@@ -278,7 +592,8 @@ int main(int argc, char *argv[]) {
   }
   SourcePicker<Graph> sp(g, given_sources);
   auto BCBound = [&sp, &cli](const Graph &g) {
-    return Brandes(g, sp, cli.num_iters());
+    return Brandes(g, sp, cli.num_iters(), cli.warm_cache(), cli.num_threads(),
+                   cli.graph_partition());
   };
   SourcePicker<Graph> vsp(g, given_sources);
   auto VerifierBound = [&vsp, &cli](const Graph &g,

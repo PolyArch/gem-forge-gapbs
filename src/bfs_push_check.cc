@@ -49,7 +49,7 @@ them in parent array as negative numbers. Thus the encoding of parent is:
 
 using namespace std;
 
-const NodeID InitParentId = -1;
+const NodeID InitDepth = -1;
 
 void TDStep(const Graph &g, pvector<NodeID> &parent,
             SlidingQueue<NodeID> &queue) {
@@ -84,8 +84,8 @@ void TDStep(const Graph &g, pvector<NodeID> &parent,
       const auto N = out_neigh_end - out_neigh_begin;
       for (int64_t j = 0; j < N; ++j) {
         NodeID v = out_neigh_begin[j];
-        if (parent_v[v] == InitParentId) {
-          bool swapped = compare_and_swap(parent_v[v], InitParentId, u);
+        if (parent_v[v] == InitDepth) {
+          bool swapped = compare_and_swap(parent_v[v], InitDepth, u);
           if (swapped) {
             lqueue.push_back(v);
           }

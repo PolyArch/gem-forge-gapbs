@@ -212,19 +212,10 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
 #endif
 
     std::cout << "Warm up done.\n";
-
-    // Start the threads.
-    {
-      omp_set_num_threads(num_threads);
-      float v;
-      float *pv = &v;
-#pragma omp parallel for schedule(static)
-      for (uint64_t i = 0; i < num_threads; ++i) {
-        __attribute__((unused)) volatile float v = *pv;
-      }
-    }
   }
 #endif // GEM_FORGE
+
+  startThreads(num_threads);
 
 #ifdef GEM_FORGE
   m5_reset_stats(0, 0);

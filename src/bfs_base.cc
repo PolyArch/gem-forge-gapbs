@@ -78,8 +78,8 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
   front.reset();
 
   t.Start();
-  pvector<NodeID> parent(g.num_nodes(), InitParentId);
-  pvector<NodeID> next_parent(g.num_nodes(), InitParentId);
+  pvector<NodeID> parent(g.num_nodes(), InitDepth);
+  pvector<NodeID> next_parent(g.num_nodes(), InitDepth);
   t.Stop();
   PrintStep("i", t.Seconds());
   parent[source] = source;

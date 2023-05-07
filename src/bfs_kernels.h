@@ -16,7 +16,7 @@
 #define OMP_SCHEDULE static
 #endif
 
-const NodeID InitParentId = -1;
+const NodeID InitDepth = -1;
 
 __attribute__((noinline)) void bfsPushCSR(
 
@@ -165,7 +165,7 @@ __attribute__((noinline)) void bfsPushCSR(
            * Perform atomic swap.
            **************************************************************************/
 
-          NodeID temp = InitParentId;
+          NodeID temp = InitDepth;
 
 #pragma ss stream_name "gap.bfs_push.swap.at"
           bool swapped = __atomic_compare_exchange_n(
@@ -365,7 +365,7 @@ __attribute__((noinline)) void bfsPushAdjList(
              * Perform atomic swap.
              **************************************************************************/
 
-            NodeID temp = InitParentId;
+            NodeID temp = InitDepth;
 
 #pragma ss stream_name "gap.bfs_push.swap.at"
             bool swapped = __atomic_compare_exchange_n(
@@ -589,7 +589,7 @@ __attribute__((noinline)) void bfsPushSingleAdjList(
                * Perform atomic swap.
                **************************************************************************/
 
-              NodeID temp = InitParentId;
+              NodeID temp = InitDepth;
 
 #pragma ss stream_name "gap.bfs_push.swap.at"
               bool swapped = __atomic_compare_exchange_n(
@@ -748,7 +748,7 @@ __attribute__((noinline)) int64_t bfsPullCSR(const Graph &g, NodeID *parent,
 #ifdef NO_EARLY_BREAK
         bool broken = i == in_degree;
 #else
-        bool broken = i == in_degree || v_parent != InitParentId;
+        bool broken = i == in_degree || v_parent != InitDepth;
 #endif
         if (broken) {
           break;
@@ -814,7 +814,7 @@ bfsPullAdjList(const AdjGraph &g, NodeID *parent, NodeID *next_parent) {
 #pragma ss stream_name "gap.bfs_pull.v_parent.ld"
           NodeID v_parent = parent[v];
 
-          local_np = (v_parent > InitParentId) ? (v + 1) : local_np;
+          local_np = (v_parent > InitDepth) ? (v + 1) : local_np;
 
           i++;
 
@@ -907,7 +907,7 @@ bfsPullSingleAdjList(const AdjGraphSingleAdjListT &g, NodeID *parent,
 #pragma ss stream_name "gap.bfs_pull.v_parent.ld"
           NodeID v_parent = parent[v];
 
-          local_np = (v_parent > InitParentId) ? (v + 1) : local_np;
+          local_np = (v_parent > InitDepth) ? (v + 1) : local_np;
 
           i++;
 
