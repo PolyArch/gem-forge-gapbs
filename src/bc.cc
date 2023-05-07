@@ -108,23 +108,9 @@ PBFS(const Graph &g, NodeID source, NodeID *depths, CountT *path_counts,
 #pragma ss stream_name "gap.bc.bfs.path_u.ld"
         CountT path_u = path_counts[u];
 
-        auto out_neigh_ptr = out_neigh_index + u;
-
-#pragma ss stream_name "gap.bc.bfs.out_begin.ld"
-        auto out_begin = out_neigh_ptr[0];
-
-#pragma ss stream_name "gap.bc.bfs.out_end.ld"
-        auto out_end = out_neigh_ptr[1];
-
-        int64_t degree = out_end - out_begin;
-
-        for (int64_t j = 0; j < degree; ++j) {
-
-#pragma ss stream_name "gap.bc.bfs.v.ld"
-          NodeID v = out_begin[j];
+        auto pushOp = [&](NodeID v) -> void {
 
 #ifndef IN_CORE_IMPL
-
           NodeID oldDepth = InitDepth;
 
 #pragma ss stream_name "gap.bc.bfs.swap.at"
@@ -132,7 +118,8 @@ PBFS(const Graph &g, NodeID source, NodeID *depths, CountT *path_counts,
               &depths[v], &oldDepth, depth, false /* weak */, __ATOMIC_RELAXED,
               __ATOMIC_RELAXED);
 
-          bool updatePath = swapped || oldDepth == depth;
+          // Use bitwise or to avoid compiler messing with our control flow.
+          bool updatePath = swapped | (oldDepth == depth);
           if (updatePath) {
 #pragma ss stream_name "gap.bc.bfs.cnt.at"
             __atomic_fetch_fadd(&path_counts[v], path_u, __ATOMIC_RELAXED);
@@ -179,7 +166,9 @@ PBFS(const Graph &g, NodeID source, NodeID *depths, CountT *path_counts,
             __atomic_fetch_fadd(&path_counts[v], path_u, __ATOMIC_RELAXED);
           }
 #endif
-        }
+        };
+
+        csrPush<false, NodeID>(u, out_neigh_index, pushOp);
       }
 
 // Move to global queue.
@@ -272,24 +261,7 @@ computeScoresPush(const Graph &g, CountT *path_counts, NodeID *depths,
 #pragma ss stream_name "gap.bc.score.delta_u.ld"
       ScoreT delta_u = deltas[u];
 
-      auto in_neigh_ptr = in_neigh_index + u;
-
-#pragma ss stream_name "gap.bc.score.in_begin.ld"
-      auto in_begin = in_neigh_ptr[0];
-
-#pragma ss stream_name "gap.bc.score.in_end.ld"
-      auto in_end = in_neigh_ptr[1];
-
-      int64_t degree = in_end - in_begin;
-
-      /**
-       * Since these are visited vertices, the degree must be > 0.
-       */
-      int64_t j = 0;
-      while (true) {
-
-#pragma ss stream_name "gap.bc.score.v.ld"
-        NodeID v = in_begin[j];
+      auto pushOp = [&](NodeID v) -> void {
 
 #pragma ss stream_name "gap.bc.score.depth_v.ld"
         auto depth_v = depths[v];
@@ -301,22 +273,18 @@ computeScoresPush(const Graph &g, CountT *path_counts, NodeID *depths,
 
           auto value = (path_counts_v / path_counts_u) * (1 + delta_u);
 
-          //           printf("PathU %lf PathV %lf DeltaU %lf Value %lf.\n",
-          //           path_counts_u,
-          //                  path_counts_v, delta_u, value);
-
 #pragma ss stream_name "gap.bc.score.delta_v.at"
           __atomic_fetch_fadd(deltas + v, value, __ATOMIC_RELAXED);
 
 #pragma ss stream_name "gap.bc.score.score_v.at"
           __atomic_fetch_fadd(scores + v, value, __ATOMIC_RELAXED);
         }
+      };
 
-        j++;
-        if (j >= degree) {
-          break;
-        }
-      }
+      /**
+       * Since these are visited vertices, the degree must be > 0.
+       */
+      csrPush<true, NodeID>(u, in_neigh_index, pushOp);
     }
   }
 }

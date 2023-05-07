@@ -516,4 +516,38 @@ public:
   }
 };
 
+/**
+ * @brief Template to perform CSR Push traverse on unweighted graph.
+ */
+template <bool PositiveDegree, typename NodeID_, typename PushOp>
+inline void csrPush(NodeID_ u, NodeID_ **neigh_index, PushOp pushOp) {
+
+  auto neigh_ptr = neigh_index + u;
+
+#pragma ss stream_name "gap.csr_push.begin.ld"
+  auto begin = neigh_ptr[0];
+
+#pragma ss stream_name "gap.csr_push.end.ld"
+  auto end = neigh_ptr[1];
+
+  int64_t degree = end - begin;
+
+  // Short circuit the degree > 0 check if PositiveDegree is true.
+  int64_t j = 0;
+  if (PositiveDegree || degree > 0) {
+    while (true) {
+
+#pragma ss stream_name "gap.csr_push.v.ld"
+      auto v = begin[j];
+
+      pushOp(v);
+
+      j++;
+      if (j >= degree) {
+        break;
+      }
+    }
+  }
+}
+
 #endif // GRAPH_H_
