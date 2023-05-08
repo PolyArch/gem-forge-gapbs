@@ -529,100 +529,44 @@ __attribute__((noinline)) void bfsPushSingleAdjList(
       NodeID u = queue_v[i];
 #endif // USE_SPATIAL_FRONTIER
 
-        /**************************************************************************
-         * Get the out edge list. Either AdjList or CSR edge list.
-         **************************************************************************/
+        auto op = [&](NodeID v) -> void {
+          /**************************************************************************
+           * Perform atomic swap.
+           **************************************************************************/
 
-        auto adj_ptr = adj_list + u;
-
-#pragma ss stream_name "gap.bfs_push.adj.lhs.ld"
-        auto *lhs = reinterpret_cast<NodeID *>(adj_ptr[0]);
-
-#pragma ss stream_name "gap.bfs_push.adj.rhs.ld"
-        auto *rhs = reinterpret_cast<NodeID *>(adj_ptr[1]);
-
-        auto *rhs_node = AdjGraphSingleAdjListT::getNodePtr(rhs);
-        auto rhs_offset = AdjGraphSingleAdjListT::getNodeOffset(rhs);
-
-        if (lhs != rhs) {
-
-          while (true) {
-            auto *lhs_node = AdjGraphSingleAdjListT::getNodePtr(lhs);
-            const auto local_rhs =
-                lhs_node != rhs_node
-                    ? (lhs_node->edges + AdjGraphSingleAdjListT::EdgesPerNode)
-                    : rhs;
-            const auto numEdges = local_rhs - lhs;
-
-            int64_t j = 0;
-
-#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
-            while (true) {
-
-#pragma ss stream_name "gap.bfs_push.adj.out_v.ld"
-              NodeID v = lhs[j];
-
-              /**************************************************************************
-               * Perform atomic swap.
-               **************************************************************************/
-
-              NodeID temp = InitDepth;
+          NodeID temp = InitDepth;
 
 #pragma ss stream_name "gap.bfs_push.swap.at"
-              bool swapped = __atomic_compare_exchange_n(
-                  parent_v + v, &temp, u, false /* weak */, __ATOMIC_RELAXED,
-                  __ATOMIC_RELAXED);
-              if (swapped) {
+          bool swapped = __atomic_compare_exchange_n(
+              parent_v + v, &temp, u, false /* weak */, __ATOMIC_RELAXED,
+              __ATOMIC_RELAXED);
+          if (swapped) {
 
-                /**************************************************************************
-                 * Push into local or spatial queue.
-                 **************************************************************************/
+            /**************************************************************************
+             * Push into local or spatial queue.
+             **************************************************************************/
 
 #ifdef USE_SPATIAL_QUEUE
 
-                /**
-                 * Hash into the spatial queue.
-                 */
-                auto queue_idx = (v / squeue_hash_div) & squeue_hash_mask;
+            /**
+             * Hash into the spatial queue.
+             */
+            auto queue_idx = (v / squeue_hash_div) & squeue_hash_mask;
 
 #pragma ss stream_name "gap.bfs_push.enque.at"
-                auto queue_loc = __atomic_fetch_add(
-                    &squeue_meta[queue_idx].size[0], 1, __ATOMIC_RELAXED);
+            auto queue_loc = __atomic_fetch_add(&squeue_meta[queue_idx].size[0],
+                                                1, __ATOMIC_RELAXED);
 
 #pragma ss stream_name "gap.bfs_push.enque.st"
-                squeue_data[queue_idx * squeue_capacity + queue_loc] = v;
+            squeue_data[queue_idx * squeue_capacity + queue_loc] = v;
 
 #else
-              lqueue.buffer[lqueue.num_elements++] = v;
+          lqueue.buffer[lqueue.num_elements++] = v;
 #endif
-              }
-
-              j++;
-              if (j == numEdges) {
-                break;
-              }
-            }
-
-            /**************************************************************************
-             * Move to next node if AdjList.
-             **************************************************************************/
-#pragma ss stream_name "gap.bfs_push.adj.next_node.ld"
-            auto next_node = lhs_node->next;
-
-            lhs = next_node->edges;
-
-            /**
-             * I need to write this werid loop break condition to to distinguish
-             * lhs and next_lhs for LoopBound.
-             * TODO: Fix this in the compiler.
-             */
-            bool rhs_zero = next_node == rhs_node && rhs_offset == 0;
-            bool should_break = rhs_zero || (lhs_node == rhs_node);
-            if (should_break) {
-              break;
-            }
           }
-        }
+        };
+
+        AdjGraphSingleAdjListT::iterate<false>(u, adj_list, op);
       }
 
       // There is an implicit barrier after pragma for.
