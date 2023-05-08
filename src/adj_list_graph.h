@@ -321,7 +321,8 @@ public:
     auto adj_list = this->adjList;
     auto degrees = this->degrees;
     int64_t edges = 0;
-#pragma omp parallel for schedule(static) firstprivate(adj_list, degrees) reduction(+:edges)
+#pragma omp parallel for schedule(static) firstprivate(adj_list, degrees)      \
+    reduction(+ : edges)
     for (int64_t i = 0; i < this->N; i++) {
 
       auto degree = degrees[i];
@@ -590,6 +591,63 @@ public:
       totalNodes += node;
     }
     return totalNodes;
+  }
+
+  template <bool PositiveDegree, typename U, typename Op>
+  static inline void iterate(U u, AdjListNode **adj_list, Op op) {
+
+    auto adj_ptr = adj_list + u;
+
+#pragma ss stream_name "gap.adj_iter.lhs.ld"
+    auto *lhs = reinterpret_cast<NodeID_ *>(adj_ptr[0]);
+
+#pragma ss stream_name "gap.adj_iter.rhs.ld"
+    auto *rhs = reinterpret_cast<NodeID_ *>(adj_ptr[1]);
+
+    auto *rhs_node = getNodePtr(rhs);
+    auto rhs_offset = getNodeOffset(rhs);
+
+    if (lhs != rhs) {
+
+      while (true) {
+        auto *lhs_node = getNodePtr(lhs);
+        const auto local_rhs =
+            lhs_node != rhs_node ? (lhs_node->edges + EdgesPerNode) : rhs;
+        const auto numEdges = local_rhs - lhs;
+
+        int64_t j = 0;
+
+#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
+        while (true) {
+
+#pragma ss stream_name "gap.adj_iter.v.ld"
+          auto v = lhs[j];
+
+          op(v);
+
+          j++;
+          if (j == numEdges) {
+            break;
+          }
+        }
+
+#pragma ss stream_name "gap.adj_iter.next_node.ld"
+        auto next_node = lhs_node->next;
+
+        lhs = next_node->edges;
+
+        /**
+         * I need to write this weird loop break condition to to distinguish
+         * lhs and next_lhs for LoopBound.
+         * TODO: Fix this in the compiler.
+         */
+        bool rhs_zero = next_node == rhs_node && rhs_offset == 0;
+        bool should_break = rhs_zero || (lhs_node == rhs_node);
+        if (should_break) {
+          break;
+        }
+      }
+    }
   }
 };
 

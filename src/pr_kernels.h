@@ -299,14 +299,6 @@ pageRankPushSingleAdjList(AdjGraphSingleAdjListT &graph,
       int64_t n = i;
 #endif
 
-      auto adj_ptr = adj_list + n;
-
-#pragma ss stream_name "gap.pr_push.adj.lhs.ld"
-      auto *lhs = reinterpret_cast<NodeID *>(adj_ptr[0]);
-
-#pragma ss stream_name "gap.pr_push.adj.rhs.ld"
-      auto *rhs = reinterpret_cast<NodeID *>(adj_ptr[1]);
-
 #pragma ss stream_name "gap.pr_push.adj.score.ld"
       ScoreT score = scores[n];
 
@@ -315,54 +307,13 @@ pageRankPushSingleAdjList(AdjGraphSingleAdjListT &graph,
 
       ScoreT outgoing_contrib = score / out_degree;
 
-      auto *rhs_node = AdjGraphSingleAdjListT::getNodePtr(rhs);
-      auto rhs_offset = AdjGraphSingleAdjListT::getNodeOffset(rhs);
-
-      if (lhs != rhs) {
-
-        while (true) {
-          auto *lhs_node = AdjGraphSingleAdjListT::getNodePtr(lhs);
-          const auto local_rhs =
-              lhs_node != rhs_node
-                  ? (lhs_node->edges + AdjGraphSingleAdjListT::EdgesPerNode)
-                  : rhs;
-          const auto numEdges = local_rhs - lhs;
-
-          int64_t j = 0;
-
-#pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
-          while (true) {
-
-#pragma ss stream_name "gap.pr_push.adj.out_v.ld"
-            NodeID v = lhs[j];
-
+      auto op = [&](NodeID v) -> void {
 #pragma ss stream_name "gap.pr_push.adj.score.at"
-            __atomic_fetch_fadd(next_scores + v, outgoing_contrib,
-                                __ATOMIC_RELAXED);
+        __atomic_fetch_fadd(next_scores + v, outgoing_contrib,
+                            __ATOMIC_RELAXED);
+      };
 
-            j++;
-            if (j == numEdges) {
-              break;
-            }
-          }
-
-#pragma ss stream_name "gap.pr_push.adj.next_node.ld"
-          auto next_node = lhs_node->next;
-
-          lhs = next_node->edges;
-
-          /**
-           * I need to write this werid loop break condition to to distinguish
-           * lhs and next_lhs for LoopBound.
-           * TODO: Fix this in the compiler.
-           */
-          bool rhs_zero = next_node == rhs_node && rhs_offset == 0;
-          bool should_break = rhs_zero || (lhs_node == rhs_node);
-          if (should_break) {
-            break;
-          }
-        }
-      }
+      AdjGraphSingleAdjListT::iterate<false>(n, adj_list, op);
     }
   }
 }
