@@ -135,32 +135,7 @@ __attribute__((noinline)) void bfsPushCSR(
       NodeID u = queue_v[i];
 #endif // USE_SPATIAL_FRONTIER
 
-        /**************************************************************************
-         * Get the out edge list. Either AdjList or CSR edge list.
-         **************************************************************************/
-
-        // Explicit write this out to aviod u + 1.
-        EdgeIndexT *out_neigh_ptr = out_neigh_index + u;
-
-#pragma ss stream_name "gap.bfs_push.out_begin.ld"
-        EdgeIndexT out_begin = out_neigh_ptr[0];
-
-#pragma ss stream_name "gap.bfs_push.out_end.ld"
-        EdgeIndexT out_end = out_neigh_ptr[1];
-
-#ifdef USE_EDGE_INDEX_OFFSET
-        NodeID *out_ptr = out_edges + out_begin;
-#else
-      NodeID *out_ptr = out_begin;
-#endif
-
-        const auto out_degree = out_end - out_begin;
-
-        for (int64_t j = 0; j < out_degree; ++j) {
-
-#pragma ss stream_name "gap.bfs_push.out_v.ld"
-          NodeID v = out_ptr[j];
-
+        auto op = [&](NodeID v) -> void {
           /**************************************************************************
            * Perform atomic swap.
            **************************************************************************/
@@ -195,7 +170,9 @@ __attribute__((noinline)) void bfsPushCSR(
           lqueue.buffer[lqueue.num_elements++] = v;
 #endif
           }
-        }
+        };
+
+        csrIterate<false>(u, out_neigh_index, op);
       }
 
       // There is an implicit barrier after pragma for.
@@ -702,8 +679,8 @@ __attribute__((noinline)) int64_t bfsPullCSR(const Graph &g, NodeID *parent,
 
   int64_t awake_count = 0;
 
-#pragma omp parallel for schedule(static) reduction(+ : awake_count) \
-  firstprivate(in_edges, in_neigh_index, parent, next_parent)
+#pragma omp parallel for schedule(static) reduction(+ : awake_count)           \
+    firstprivate(in_edges, in_neigh_index, parent, next_parent)
   for (NodeID u = 0; u < g.num_nodes(); u++) {
 
 #pragma ss stream_name "gap.bfs_pull.parent.ld"
@@ -783,8 +760,8 @@ bfsPullAdjList(const AdjGraph &g, NodeID *parent, NodeID *next_parent) {
 
   int64_t awake_count = 0;
 
-#pragma omp parallel for schedule(static) reduction(+ : awake_count) \
-  firstprivate(adj_list, parent, next_parent)
+#pragma omp parallel for schedule(static) reduction(+ : awake_count)           \
+    firstprivate(adj_list, parent, next_parent)
   for (NodeID u = 0; u < num_nodes; u++) {
 
 #pragma ss stream_name "gap.bfs_pull.parent.ld"
@@ -863,8 +840,8 @@ bfsPullSingleAdjList(const AdjGraphSingleAdjListT &g, NodeID *parent,
 
   int64_t awake_count = 0;
 
-#pragma omp parallel for schedule(static) reduction(+ : awake_count) \
-  firstprivate(adj_list, parent, next_parent)
+#pragma omp parallel for schedule(static) reduction(+ : awake_count)           \
+    firstprivate(adj_list, parent, next_parent)
   for (NodeID u = 0; u < num_nodes; u++) {
 
 #pragma ss stream_name "gap.bfs_pull.parent.ld"
