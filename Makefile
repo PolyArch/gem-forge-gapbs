@@ -23,6 +23,7 @@ ifneq ($(SERIAL), 1)
 endif
 
 KERNELS = bc bfs bfs_pull bfs_pull_shuffle cc cc_sv tc
+KERNELS += bc_adj_uno_aff_sq
 KERNELS += pr_pull
 KERNELS += pr_pull_shuffle
 KERNELS += pr_push

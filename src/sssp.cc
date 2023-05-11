@@ -796,12 +796,7 @@ pvector<WeightT> DeltaStep(const WGraph &g, NodeID source, int num_threads,
     gf_warm_array("dist", dist_data, num_nodes * sizeof(dist_data[0]));
 
 #ifdef USE_ADJ_LIST
-    gf_warm_array("adj_list", adjGraph.adjList,
-                  num_nodes * sizeof(adjGraph.adjList[0]));
-
-    if (warm_cache > 1) {
-      adjGraph.warmAdjList();
-    }
+    adjGraph.warmAdjList();
 #else
     gf_warm_array("out_neigh_index", out_neigh_index,
                   num_nodes * sizeof(out_neigh_index[0]));

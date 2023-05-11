@@ -183,11 +183,6 @@ pvector<ScoreT> BuildAdjGraph(const GraphT &g, int warm_cache = 2,
 #endif
 
 #ifdef USE_ADJ_LIST
-    gf_warm_array("degrees", adjGraph.degrees,
-                  num_nodes * sizeof(adjGraph.degrees[0]));
-    gf_warm_array("adj_list", adjGraph.adjList,
-                  num_nodes * sizeof(adjGraph.adjList[0]));
-
     // Warm up the adjacent list.
     adjGraph.warmAdjList();
 

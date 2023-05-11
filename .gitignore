@@ -15,3 +15,5 @@ benchmark/graphs/*.sg
 benchmark/graphs/*.wsg
 benchmark/graphs/raw/*
 benchmark/graphs/*
+
+graph_partition/graphs/*

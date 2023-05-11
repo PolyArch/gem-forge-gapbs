@@ -250,8 +250,8 @@ public:
     auto pos = graphFn.rfind('.');
     assert(pos != std::string::npos);
     auto prefix = graphFn.substr(0, pos);
-    auto partELFn = prefix + ".part.el";
-    std::ifstream f(partELFn);
+    auto partELFn = prefix + ".part.bel";
+    std::ifstream f(partELFn, std::ios::binary);
     if (!f.is_open()) {
       return;
     }
@@ -261,11 +261,19 @@ public:
      */
     Timer t;
     t.Start();
-    typename CSRGraph<NodeID_, DestID_, invert>::InterPartEdgeList el;
-    NodeID_ duplicated, original;
-    while (f >> duplicated >> original) {
-      el.push_back(Edge(duplicated, original));
+    uint64_t N = 0;
+    f.read(reinterpret_cast<char *>(&N), sizeof(N));
+    typename CSRGraph<NodeID_, DestID_, invert>::InterPartEdgeList el(N);
+    f.read(reinterpret_cast<char *>(el.data()), N * sizeof(EdgePair<NodeID_>));
+    printf("%lu InterPartEdges.\n", N);
+    if (N > 2) {
+      printf("First Two InterPartEdges %d -> %d, %d -> %d.\n", el[0].u, el[0].v,
+             el[1].u, el[1].v);
     }
+    // NodeID_ duplicated, original;
+    // while (f >> duplicated >> original) {
+    //   el.push_back(Edge(duplicated, original));
+    // }
 
     g.setInterPartitionEdges(std::move(el));
 

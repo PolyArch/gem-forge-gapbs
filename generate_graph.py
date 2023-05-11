@@ -81,11 +81,11 @@ def part(prefix, method, parts, symmetric):
             cmd += ' -s'
         os.system(cmd)
         # Generate the serialized graph for each sub-graph.
-        for i in range(nparts):
-            cmd = f'./converter -f {prefix}-ne{nparts}-sub{i}.el -b {prefix}-ne{nparts}-sub{i}'
-            if symmetric:
-                cmd += ' -s'
-            os.system(cmd)
+        # for i in range(nparts):
+        #     cmd = f'./converter -f {prefix}-ne{nparts}-sub{i}.el -b {prefix}-ne{nparts}-sub{i}'
+        #     if symmetric:
+        #         cmd += ' -s'
+        #     os.system(cmd)
     else:
         if symmetric:
             os.system(f'python src/metis_partition.py --symmetric {prefix}.el --part={method} --nparts={nparts}')
@@ -139,11 +139,11 @@ for nparts in [64]:
         # part(f'{folder}/krn20-k2', method, nparts, symmetric)
         # part(f'{folder}/krn19-k4', method, nparts, symmetric)
         # part(f'{folder}/krn18-k8', method, nparts, symmetric)
-        # part(f'{folder}/krn17-k16', method, nparts, symmetric)
+        part(f'{folder}/krn17-k16', method, nparts, symmetric)
         # part(f'{folder}/krn16-k32', method, nparts, symmetric)
         # part(f'{folder}/krn15-k64', method, nparts, symmetric)
 
-        part(f'{folder}/twitch-gamers', method, nparts, symmetric)
+        # part(f'{folder}/twitch-gamers', method, nparts, symmetric)
 
         # This is directed graph.
         symmetric = False
@@ -151,5 +151,5 @@ for nparts in [64]:
 
         # os.system(f'python src/metis_partition.py {folder}/ego-twitter.el --part={method} --nparts={nparts}')
 
-        part(f'{folder}/ego-gplus', method, nparts, symmetric)
+        # part(f'{folder}/ego-gplus', method, nparts, symmetric)
         # part(f'{folder}/soc-LiveJournal1', method, nparts, symmetric)

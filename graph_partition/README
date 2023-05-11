@@ -1,0 +1,14 @@
+# Setup
+```bash
+conda env create -n graph_partition -f environment.yml
+```
+
+# Running HEP
+```bash
+python hep.py <graph_file.el> <num_partitions>
+```
+
+Will emit the following files
+- `.new.el`: partitioned graph with duplicate nodes (nodes in the same partition are contiguous)
+- `.partition.el`: directed edge from duplicate node to original node
+- `.order`: the number of nodes in each partition

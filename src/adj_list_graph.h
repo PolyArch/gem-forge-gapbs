@@ -308,6 +308,10 @@ public:
   }
 
   __attribute__((noinline)) void warmAdjList() {
+#ifdef GEM_FORGE
+    gf_warm_array("degrees", degrees, N * sizeof(degrees[0]));
+    gf_warm_array("adj_list", adjList, N * sizeof(adjList[0]));
+#endif
     if (ListType == AdjListTypeE::SingleListPerGraph) {
       this->warmSingleAdjList();
     } else if (this->IsOneListPerNode) {
@@ -607,7 +611,7 @@ public:
     auto *rhs_node = getNodePtr(rhs);
     auto rhs_offset = getNodeOffset(rhs);
 
-    if (lhs != rhs) {
+    if (PositiveDegree || lhs != rhs) {
 
       while (true) {
         auto *lhs_node = getNodePtr(lhs);

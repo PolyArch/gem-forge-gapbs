@@ -27,6 +27,16 @@
 #include "gem5/m5ops.h"
 #endif
 
+#if defined(USE_ADJ_LIST_SINGLE_LIST)
+using AdjGraphT = AdjGraphSingleAdjListT;
+#elif defined(USE_ADJ_LIST_MIX_CSR)
+using AdjGraphT = AdjGraphMixCSRT;
+#elif defined(USE_ADJ_LIST_NO_PREV)
+using AdjGraphT = AdjGraphNoPrevT;
+#else
+using AdjGraphT = AdjGraph;
+#endif
+
 /*
 GAP Benchmark Suite
 Kernel: Betweenness Centrality (BC)
@@ -59,7 +69,13 @@ typedef double CountT;
 const NodeID InitDepth = -1;
 
 __attribute__((noinline)) void
-PBFS(const Graph &g, NodeID source, NodeID *depths, CountT *path_counts,
+PBFS(const Graph &g,
+
+#ifdef USE_ADJ_LIST
+     AdjGraphT &adjGraph,
+#endif
+
+     NodeID source, NodeID *depths, CountT *path_counts,
 
 #ifdef USE_SPATIAL_QUEUE
      SpatialQueue<NodeID> &squeue,
@@ -89,6 +105,10 @@ PBFS(const Graph &g, NodeID source, NodeID *depths, CountT *path_counts,
     const auto squeue_hash_mask = squeue.hash_mask;
 #else
     SizedArray<NodeID> lqueue(num_nodes);
+#endif
+
+#ifdef USE_ADJ_LIST
+    auto adj_list = adjGraph.adjList;
 #endif
 
     NodeID depth = 0;
@@ -168,7 +188,15 @@ PBFS(const Graph &g, NodeID source, NodeID *depths, CountT *path_counts,
 #endif
         };
 
+#ifdef USE_ADJ_LIST
+#ifdef USE_ADJ_LIST_SINGLE_LIST
+        AdjGraphT::iterate<false>(u, adj_list, pushOp);
+#else
+#error "Not Supported Yet."
+#endif
+#else
         csrIterate<false>(u, out_neigh_index, pushOp);
+#endif
       }
 
 // Move to global queue.
@@ -235,56 +263,79 @@ computeScoresPull(const Graph &g, CountT *path_counts, NodeID *depths,
 }
 
 __attribute__((noinline)) void
-computeScoresPush(const Graph &g, CountT *path_counts, NodeID *depths,
-                  ScoreT *scores, ScoreT *deltas,
+computeScoresPush(const Graph &g,
+
+#ifdef USE_ADJ_LIST
+                  AdjGraphT &adjGraph,
+#endif
+
+                  CountT *path_counts, NodeID *depths, ScoreT *scores,
+                  ScoreT *deltas,
                   vector<SlidingQueue<NodeID>::iterator> &depth_index) {
 
   auto in_neigh_index = g.in_neigh_index();
 
   int depth_index_n = depth_index.size();
-  for (int d = depth_index_n - 2; d > 0; d--) {
 
-    auto lhs = depth_index[d];
-    auto rhs = depth_index[d + 1];
-    auto cnt = rhs - lhs;
+#pragma omp parallel firstprivate(path_counts, depths, scores, deltas,         \
+                                      in_neigh_index)
+  {
 
-#pragma omp parallel for schedule(static)                                      \
-    firstprivate(d, path_counts, depths, scores, deltas, lhs, in_neigh_index)
-    for (int64_t i = 0; i < cnt; ++i) {
+#ifdef USE_ADJ_LIST
+    auto adj_list = adjGraph.adjList;
+#endif
+
+    for (int d = depth_index_n - 2; d > 0; d--) {
+
+      auto lhs = depth_index[d];
+      auto rhs = depth_index[d + 1];
+      auto cnt = rhs - lhs;
+
+#pragma omp for schedule(static)
+      for (int64_t i = 0; i < cnt; ++i) {
 
 #pragma ss stream_name "gap.bc.score.u.ld"
-      NodeID u = lhs[i];
+        NodeID u = lhs[i];
 
 #pragma ss stream_name "gap.bc.score.path_u.ld"
-      CountT path_counts_u = path_counts[u];
+        CountT path_counts_u = path_counts[u];
 
 #pragma ss stream_name "gap.bc.score.delta_u.ld"
-      ScoreT delta_u = deltas[u];
+        ScoreT delta_u = deltas[u];
 
-      auto pushOp = [&](NodeID v) -> void {
+        auto pushOp = [&](NodeID v) -> void {
 
 #pragma ss stream_name "gap.bc.score.depth_v.ld"
-        auto depth_v = depths[v];
+          auto depth_v = depths[v];
 
-        if (depth_v == d - 1) {
+          if (depth_v == d - 1) {
 
 #pragma ss stream_name "gap.bc.score.path_v.ld"
-          CountT path_counts_v = path_counts[v];
+            CountT path_counts_v = path_counts[v];
 
-          auto value = (path_counts_v / path_counts_u) * (1 + delta_u);
+            auto value = (path_counts_v / path_counts_u) * (1 + delta_u);
 
 #pragma ss stream_name "gap.bc.score.delta_v.at"
-          __atomic_fetch_fadd(deltas + v, value, __ATOMIC_RELAXED);
+            __atomic_fetch_fadd(deltas + v, value, __ATOMIC_RELAXED);
 
 #pragma ss stream_name "gap.bc.score.score_v.at"
-          __atomic_fetch_fadd(scores + v, value, __ATOMIC_RELAXED);
-        }
-      };
+            __atomic_fetch_fadd(scores + v, value, __ATOMIC_RELAXED);
+          }
+        };
 
-      /**
-       * Since these are visited vertices, the degree must be > 0.
-       */
-      csrIterate<true>(u, in_neigh_index, pushOp);
+        /**
+         * Since these are visited vertices, the degree must be > 0.
+         */
+#ifdef USE_ADJ_LIST
+#ifdef USE_ADJ_LIST_SINGLE_LIST
+        AdjGraphT::iterate<true>(u, adj_list, pushOp);
+#else
+#error "Not Supported Yet."
+#endif
+#else
+        csrIterate<true>(u, in_neigh_index, pushOp);
+#endif
+      }
     }
   }
 }
@@ -366,8 +417,35 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
 #endif
 
   m5_stream_nuca_remap();
-
 #endif
+
+#ifdef USE_ADJ_LIST
+  printf("Start to build AdjListGraph, node %luB.\n",
+         sizeof(AdjGraph::AdjListNode));
+
+#ifndef GEM_FORGE
+  Timer adjBuildTimer;
+  adjBuildTimer.Start();
+#endif // GEM_FORGE
+
+  AdjGraphT outAdjGraph(num_threads, g.num_nodes(), g.out_neigh_index_offset(),
+                        g.out_edges(), g.out_neigh_index());
+  AdjGraphT *inAdjGraph = nullptr;
+  if (g.out_neigh_index() == g.in_neigh_index()) {
+    inAdjGraph = &outAdjGraph;
+  } else {
+    inAdjGraph =
+        new AdjGraphT(num_threads, g.num_nodes(), g.in_neigh_index_offset(),
+                      g.in_edges(), g.out_neigh_index());
+  }
+
+#ifndef GEM_FORGE
+  adjBuildTimer.Stop();
+  printf("AdjListGraph built %10.5lfs.\n", adjBuildTimer.Seconds());
+#else
+  printf("AdjListGraph built.\n");
+#endif // GEM_FORGE
+#endif // USE_ADJ_LIST
 
 #ifdef GEM_FORGE
   m5_detail_sim_start();
@@ -380,6 +458,16 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
     gf_warm_array("delta", deltas.data(), num_nodes * sizeof(deltas[0]));
     gf_warm_array("path", path_counts.data(),
                   num_nodes * sizeof(path_counts[0]));
+
+#ifdef USE_ADJ_LIST
+    // Warm up the adjacent list.
+    outAdjGraph.warmAdjList();
+    if (inAdjGraph != &outAdjGraph) {
+      inAdjGraph->warmAdjList();
+    }
+
+#else // Warm up CSR list.
+
     gf_warm_array("out_neigh_index", g.out_neigh_index(),
                   num_nodes * sizeof(g.out_neigh_index()[0]));
 
@@ -388,6 +476,7 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
       gf_warm_array("out_edges", g.out_edges(),
                     num_edges * sizeof(g.out_edges()[0]));
     }
+#endif
 
     printf("Warm up done.\n");
   }
@@ -413,7 +502,11 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
     m5_work_begin(0, 0);
 #endif
 
-    PBFS(g, source, depths.data(), path_counts.data(),
+    PBFS(g,
+#ifdef USE_ADJ_LIST
+         outAdjGraph,
+#endif
+         source, depths.data(), path_counts.data(),
 #ifdef USE_SPATIAL_QUEUE
          squeue,
 #endif
@@ -436,7 +529,11 @@ pvector<ScoreT> Brandes(const Graph &g, SourcePicker<Graph> &sp,
     computeScoresPull(g, path_counts.data(), depths.data(), scores.data(),
                       deltas.data(), depth_index);
 #else
-    computeScoresPush(g, path_counts.data(), depths.data(), scores.data(),
+    computeScoresPush(g,
+#ifdef USE_ADJ_LIST
+                      *inAdjGraph,
+#endif
+                      path_counts.data(), depths.data(), scores.data(),
                       deltas.data(), depth_index);
 #endif
 

@@ -254,12 +254,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 #endif
 
 #ifdef USE_ADJ_LIST
-    gf_warm_array("adj_list", adjGraph.adjList,
-                  num_nodes * sizeof(adjGraph.adjList[0]));
-
-    if (warm_cache > 1) {
-      adjGraph.warmAdjList();
-    }
+    adjGraph.warmAdjList();
 
 #else
 

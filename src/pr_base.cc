@@ -183,15 +183,9 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
                   num_nodes * sizeof(out_neigh_index[0]));
 #endif
 
-#ifdef USE_ADJ_LIST
-    gf_warm_array("degrees", adjGraph.degrees,
-                  num_nodes * sizeof(adjGraph.degrees[0]));
-    gf_warm_array("adj_list", adjGraph.adjList,
-                  num_nodes * sizeof(adjGraph.adjList[0]));
-
-    // Warm up the adjacent list.
+#if !defined(DISABLE_KERNEL1) || !defined(DISABLE_KERNEL2)
+#ifdef USE_ADJ_LIST // Warm up the adjacent list.
     adjGraph.warmAdjList();
-
 #else // Warm up CSR list.
 
 #ifdef USE_PUSH
@@ -208,6 +202,7 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
     if (warm_cache > 1) {
       gf_warm_array("in_edges", in_edges, num_edges * sizeof(in_edges[0]));
     }
+#endif
 #endif
 #endif
 
