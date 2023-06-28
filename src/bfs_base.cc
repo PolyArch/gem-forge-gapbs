@@ -85,6 +85,11 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
   parent[source] = source;
   next_parent[source] = source;
 
+#ifdef SHUFFLE_NODES
+  // Shuffle the nodes.
+  auto nodes_data = initShuffledNodes<NodeID>(g.num_nodes());
+#endif
+
   const int num_banks = 64;
   const auto num_nodes = g.num_nodes();
   const auto num_nodes_per_bank =
@@ -132,6 +137,12 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
   {
     NodeID *parent_data = parent.data();
     NodeID *next_parent_data = next_parent.data();
+
+#ifdef SHUFFLE_NODES
+    m5_stream_nuca_region("gap.bfs.nodes", nodes_data, sizeof(nodes_data[0]),
+                          num_nodes, 0, 0);
+#endif
+
     m5_stream_nuca_region("gap.bfs.parent", parent_data, sizeof(NodeID),
                           num_nodes, 0, 0);
     m5_stream_nuca_region("gap.bfs.next_parent", next_parent_data,
@@ -234,6 +245,11 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 
   if (warm_cache > 0) {
     auto num_nodes = g.num_nodes();
+
+#ifdef SHUFFLE_NODES
+    gf_warm_array("nodes", nodes_data, num_nodes * sizeof(nodes_data[0]));
+#endif
+
     NodeID *parent_data = parent.data();
     gf_warm_array("parent", parent_data, num_nodes * sizeof(parent_data[0]));
 
@@ -348,7 +364,11 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 #ifdef USE_ADJ_LIST
     awake_count = BFSPullFunc(adjGraph, parent.data(), next_parent.data());
 #else
-    awake_count = bfsPullCSR(g, parent.data(), next_parent.data());
+    awake_count = bfsPullCSR(g,
+#ifdef SHUFFLE_NODES
+                             nodes_data,
+#endif
+                             parent.data(), next_parent.data());
 #endif
     bfsPullUpdate(g.num_nodes(), parent.data(), next_parent.data());
 

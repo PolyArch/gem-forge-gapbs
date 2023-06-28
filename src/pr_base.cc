@@ -79,19 +79,7 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
 
 #ifdef SHUFFLE_NODES
   // Shuffle the nodes.
-  int64_t num_nodes = g.num_nodes();
-  pvector<NodeID> nodes(num_nodes);
-  for (NodeID i = 0; i < num_nodes; ++i) {
-    nodes[i] = i;
-  }
-  for (NodeID i = 0; i + 1 < num_nodes; ++i) {
-    // Shuffle a little bit to make it not always linear access.
-    long long j = (rand() % (num_nodes - i)) + i;
-    NodeID tmp = nodes[i];
-    nodes[i] = nodes[j];
-    nodes[j] = tmp;
-  }
-  NodeID *nodes_data = nodes.data();
+  auto nodes_data = initShuffledNodes<NodeID>(num_nodes);
 #endif
 
   /**
@@ -124,6 +112,11 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
 #ifdef GEM_FORGE
 
   g.declareNUCARegions(graph_partition);
+
+#ifdef SHUFFLE_NODES
+  m5_stream_nuca_region("gap.pr.nodes", nodes_data, sizeof(nodes_data[0]),
+                        num_nodes, 0, 0);
+#endif
 
   m5_stream_nuca_region("gap.pr.score0", scores_data0, sizeof(ScoreT),
                         num_nodes, 0, 0);
@@ -216,7 +209,10 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
   m5_reset_stats(0, 0);
 #endif
 
-  for (int iter = 0; iter < max_iters; iter++) {
+  std::vector<ScoreT> errs(max_iters, 0);
+
+  int iter = 0;
+  for (; iter < max_iters; iter++) {
 
 #ifdef GEM_FORGE
     m5_work_begin(0, 0);
@@ -341,9 +337,14 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
       printf(" - Iter %d-2 %d Score0 %f Score1 %f.\n", iter, n, scores_data0[n],
              scores_data1[n]);
     }
+
 #endif
 
+#ifdef GEM_FORGE
+    errs[iter] = error;
+#else
     printf(" %2d    %f\n", iter, error);
+#endif
 
 #ifdef GEM_FORGE
     m5_work_end(1, 0);
@@ -355,6 +356,10 @@ pvector<ScoreT> PageRank(const Graph &g, int max_iters, double epsilon = 0,
 
 #ifdef GEM_FORGE
   m5_detail_sim_end();
+
+  for (int i = 0; i <= std::min(iter, max_iters - 1); ++i) {
+    printf(" %d     %f.\n", i, errs[i]);
+  }
   exit(0);
 #endif
 

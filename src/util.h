@@ -124,12 +124,15 @@ uint32_t log2Pow2(uint32_t v) {
 
 #ifdef GEM_FORGE
 
-__attribute__((noinline)) void gf_warm_impl(char *buffer, uint64_t totalBytes) {
+__attribute__((noinline)) uint64_t gf_warm_impl(char *buffer,
+                                                uint64_t totalBytes) {
   auto N = totalBytes / 64;
+  uint64_t x = 0;
 #pragma clang loop unroll(disable) vectorize(disable) interleave(disable)
   for (uint64_t i = 0; i < N; i++) {
-    __attribute__((unused)) volatile char v = buffer[i * 64];
+    x += buffer[i * 64];
   }
+  return x;
 }
 
 void gf_warm_array(const char *name, void *buffer, uint64_t totalBytes) {
@@ -151,9 +154,9 @@ void gf_warm_array(const char *name, void *buffer, uint64_t totalBytes) {
     char *end = data + cachedBytes;
     if (lhs < end) {
       if (rhs <= end) {
-        gf_warm_impl(lhs, rhs - lhs);
+        __attribute__((unused)) volatile auto x = gf_warm_impl(lhs, rhs - lhs);
       } else {
-        gf_warm_impl(lhs, end - lhs);
+        __attribute__((unused)) volatile auto x = gf_warm_impl(lhs, end - lhs);
       }
     }
   }
@@ -237,6 +240,22 @@ fuseWork(const std::vector<int64_t> &part, int threads) {
   }
   assert(accWork == total);
   return ret;
+}
+
+template <typename NodeID>
+__attribute__((noinline)) NodeID *initShuffledNodes(int64_t num_nodes) {
+  NodeID *nodes = alignedAllocAndTouch<NodeID>(num_nodes);
+  for (NodeID n = 0; n < num_nodes; n++) {
+    nodes[n] = n;
+  }
+  for (NodeID i = 0; i + 1 < num_nodes; ++i) {
+    // Shuffle a little bit to make it not always linear access.
+    long long j = (rand() % (num_nodes - i)) + i;
+    NodeID tmp = nodes[i];
+    nodes[i] = nodes[j];
+    nodes[j] = tmp;
+  }
+  return nodes;
 }
 
 #endif // UTIL_H_

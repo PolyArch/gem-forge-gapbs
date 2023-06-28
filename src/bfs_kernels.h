@@ -142,34 +142,42 @@ __attribute__((noinline)) void bfsPushCSR(
 
           NodeID temp = InitDepth;
 
-#pragma ss stream_name "gap.bfs_push.swap.at"
-          bool swapped = __atomic_compare_exchange_n(
-              parent_v + v, &temp, u, false /* weak */, __ATOMIC_RELAXED,
-              __ATOMIC_RELAXED);
-          if (swapped) {
+#ifdef CHECK_BEFORE_ATOMIC
+          if (parent_v[v] == InitDepth) {
+#endif
 
-            /**************************************************************************
-             * Push into local or spatial queue.
-             **************************************************************************/
+#pragma ss stream_name "gap.bfs_push.swap.at"
+            bool swapped = __atomic_compare_exchange_n(
+                parent_v + v, &temp, u, false /* weak */, __ATOMIC_RELAXED,
+                __ATOMIC_RELAXED);
+            if (swapped) {
+
+              /**************************************************************************
+               * Push into local or spatial queue.
+               **************************************************************************/
 
 #ifdef USE_SPATIAL_QUEUE
 
-            /**
-             * Hash into the spatial queue.
-             */
-            auto queue_idx = (v / squeue_hash_div) & squeue_hash_mask;
+              /**
+               * Hash into the spatial queue.
+               */
+              auto queue_idx = (v / squeue_hash_div) & squeue_hash_mask;
 
 #pragma ss stream_name "gap.bfs_push.enque.at"
-            auto queue_loc = __atomic_fetch_add(&squeue_meta[queue_idx].size[0],
-                                                1, __ATOMIC_RELAXED);
+              auto queue_loc = __atomic_fetch_add(
+                  &squeue_meta[queue_idx].size[0], 1, __ATOMIC_RELAXED);
 
 #pragma ss stream_name "gap.bfs_push.enque.st"
-            squeue_data[queue_idx * squeue_capacity + queue_loc] = v;
+              squeue_data[queue_idx * squeue_capacity + queue_loc] = v;
 
 #else
           lqueue.buffer[lqueue.num_elements++] = v;
 #endif
+            }
+
+#ifdef CHECK_BEFORE_ATOMIC
           }
+#endif
         };
 
         csrIterate<false>(u, out_neigh_index, op);
@@ -611,7 +619,11 @@ __attribute__((noinline)) void bfsPushSingleAdjList(
 #endif
 #endif
 
-__attribute__((noinline)) int64_t bfsPullCSR(const Graph &g, NodeID *parent,
+__attribute__((noinline)) int64_t bfsPullCSR(const Graph &g,
+#ifdef SHUFFLE_NODES
+                                             NodeID *nodes,
+#endif
+                                             NodeID *parent,
                                              NodeID *next_parent) {
 
   NodeID *in_edges = g.in_edges();
@@ -623,9 +635,22 @@ __attribute__((noinline)) int64_t bfsPullCSR(const Graph &g, NodeID *parent,
 
   int64_t awake_count = 0;
 
+#ifdef SHUFFLE_NODES
+
+#pragma omp parallel for schedule(static) reduction(+ : awake_count)           \
+    firstprivate(nodes, in_edges, in_neigh_index, parent, next_parent)
+  for (int64_t k = 0; k < g.num_nodes(); k++) {
+
+    int64_t u = nodes[k];
+
+#else
 #pragma omp parallel for schedule(static) reduction(+ : awake_count)           \
     firstprivate(in_edges, in_neigh_index, parent, next_parent)
-  for (NodeID u = 0; u < g.num_nodes(); u++) {
+  for (int64_t k = 0; k < g.num_nodes(); k++) {
+
+    int64_t u = k;
+
+#endif
 
 #pragma ss stream_name "gap.bfs_pull.parent.ld"
     NodeID p = parent[u];

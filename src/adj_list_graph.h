@@ -368,8 +368,9 @@ public:
       auto ptr = reinterpret_cast<DestID_ *>(adj_list[0]);
       auto node = getNodePtr(ptr);
       while (node) {
-        edges++;
-        node = node->next;
+        auto next_node = node->next;
+        edges += reinterpret_cast<int64_t>(next_node);
+        node = next_node;
       }
     }
     printf("Warmed AdjList.\n");

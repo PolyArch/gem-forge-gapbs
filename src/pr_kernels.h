@@ -324,24 +324,33 @@ pageRankPushUpdate(NodeID num_nodes, ScoreT *scores, ScoreT *next_scores,
 
   ScoreT error = 0;
 
-#pragma omp parallel for reduction(+ : error) schedule(static)                 \
-    firstprivate(num_nodes, scores, next_scores, base_score, kDamp)
-  for (NodeID n = 0; n < num_nodes; n++) {
+#pragma omp parallel firstprivate(num_nodes, scores, next_scores, base_score,  \
+                                      kDamp)
+  {
+
+    ScoreT local_error = 0;
+
+#pragma omp for schedule(static) nowait
+    for (NodeID n = 0; n < num_nodes; n++) {
 
 #pragma ss stream_name "gap.pr_push.update.score.ld"
-    ScoreT score = scores[n];
+      ScoreT score = scores[n];
 
 #pragma ss stream_name "gap.pr_push.update.next.ld"
-    ScoreT next = next_scores[n];
+      ScoreT next = next_scores[n];
 
-    ScoreT next_score = base_score + kDamp * next;
-    error += next_score > score ? (next_score - score) : (score - next_score);
+      ScoreT next_score = base_score + kDamp * next;
+      local_error +=
+          next_score > score ? (next_score - score) : (score - next_score);
 
 #pragma ss stream_name "gap.pr_push.update.score.st"
-    scores[n] = next_score;
+      scores[n] = next_score;
 
 #pragma ss stream_name "gap.pr_push.update.next.st"
-    next_scores[n] = 0;
+      next_scores[n] = 0;
+    }
+
+    __atomic_fetch_fadd(&error, local_error, __ATOMIC_RELAXED);
   }
 
   return error;
@@ -433,6 +442,11 @@ pageRankPullCSR(NodeID num_nodes,
                      base_score, kDamp)
   for (NodeID u = 0; u < num_nodes; u++) {
 
+#endif
+
+#ifndef GEM_FORGE
+    printf("%d %p %p %d.\n", u, in_neigh_index[u], in_neigh_index[u + 1],
+           in_neigh_index[u + 1] - in_neigh_index[u]);
 #endif
 
     ScoreT incoming_total = 0;

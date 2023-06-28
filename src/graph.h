@@ -519,17 +519,17 @@ public:
 };
 
 /**
- * @brief Template to perform CSR Push traverse on unweighted graph.
+ * @brief Template to perform CSR traverse on unweighted graph.
  */
-template <bool PositiveDegree, typename U, typename NodeID, typename PushOp>
-inline void csrIterate(U u, NodeID **neigh_index, PushOp pushOp) {
+template <bool PositiveDegree, typename U, typename NodeID, typename Op>
+inline void csrIterate(U u, NodeID **neigh_index, Op op) {
 
   auto neigh_ptr = neigh_index + u;
 
-#pragma ss stream_name "gap.csr_push.begin.ld"
+#pragma ss stream_name "gap.csr_iter.begin.ld"
   auto begin = neigh_ptr[0];
 
-#pragma ss stream_name "gap.csr_push.end.ld"
+#pragma ss stream_name "gap.csr_iter.end.ld"
   auto end = neigh_ptr[1];
 
   int64_t degree = end - begin;
@@ -539,10 +539,10 @@ inline void csrIterate(U u, NodeID **neigh_index, PushOp pushOp) {
   if (PositiveDegree || degree > 0) {
     while (true) {
 
-#pragma ss stream_name "gap.csr_push.v.ld"
+#pragma ss stream_name "gap.csr_iter.v.ld"
       auto v = begin[j];
 
-      pushOp(v);
+      op(v);
 
       j++;
       if (j >= degree) {
