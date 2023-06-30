@@ -88,7 +88,7 @@ int64_t TDStep(const Graph &g, pvector<NodeID> &parent,
     for (auto iter = queue_v; iter < queue_e; iter++) {
       NodeID u = *iter;
       // Explicit write this out to aviod u + 1.
-      NodeID *const *out_neigh_index = g.out_neigh_index() + u;
+      NodeID *const *out_neigh_index = graph_out_neigh_index + u;
       const NodeID *out_neigh_begin = out_neigh_index[0];
       const NodeID *out_neigh_end = out_neigh_index[1];
       const auto N = out_neigh_end - out_neigh_begin;
@@ -138,8 +138,8 @@ pvector<NodeID> InitParent(const Graph &g) {
   return parent;
 }
 
-pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
-                      int beta = 18) {
+pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
+                      int alpha = 15, int beta = 18, int warm_cache = 2) {
   PrintStep("Source", static_cast<int64_t>(source));
   Timer t;
   t.Start();
@@ -157,10 +157,36 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
   int64_t edges_to_check = g.num_edges_directed();
   int64_t scout_count = g.out_degree(source);
 
-#ifdef GEM_FORGE
-  m5_detail_sim_start();
-  m5_reset_stats(0, 0);
-#endif
+  gf_detail_sim_start();
+
+  if (warm_cache > 0) {
+    auto num_nodes = g.num_nodes();
+    int checkCached = 0;
+
+    NodeID *parent_data = parent.data();
+    gf_warm_array("parent", parent_data, num_nodes * sizeof(parent_data[0]),
+                  checkCached);
+
+    auto out_neigh_index = g.out_neigh_index();
+    gf_warm_array("out_neigh_index", out_neigh_index,
+                  num_nodes * sizeof(out_neigh_index[0]), checkCached);
+    auto in_neigh_index = g.in_neigh_index();
+    gf_warm_array("out_neigh_index", in_neigh_index,
+                  num_nodes * sizeof(in_neigh_index[0]), checkCached);
+    if (warm_cache > 1) {
+      const auto num_edges = g.num_edges_directed();
+      auto out_edges = g.out_edges();
+      gf_warm_array("out_edges", out_edges, num_edges * sizeof(out_edges[0]),
+                    checkCached);
+      auto in_edges = g.in_edges();
+      gf_warm_array("in_edges", in_edges, num_edges * sizeof(in_edges[0]),
+                    checkCached);
+    }
+  }
+
+  startThreads(num_threads);
+
+  gf_reset_stats();
 
   while (!queue.empty()) {
     if (scout_count > edges_to_check / alpha) {
@@ -170,17 +196,15 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
       awake_count = queue.size();
       queue.slide_window();
       do {
-#ifdef GEM_FORGE
-        m5_work_begin(0, 0);
-#else
+        gf_work_begin(0);
+#ifndef GEM_FORGE
         t.Start();
 #endif
         old_awake_count = awake_count;
         awake_count = BUStep(g, parent, front, curr);
         front.swap(curr);
-#ifdef GEM_FORGE
-        m5_work_end(0, 0);
-#else
+        gf_work_end(0);
+#ifndef GEM_FORGE
         t.Stop();
         PrintStep("bu", t.Seconds(), awake_count);
 #endif
@@ -190,17 +214,15 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int alpha = 15,
       PrintStep("c", t.Seconds());
       scout_count = 1;
     } else {
-#ifdef GEM_FORGE
-      m5_work_begin(1, 0);
-#else
+      gf_work_begin(1);
+#ifndef GEM_FORGE
       t.Start();
 #endif
       edges_to_check -= scout_count;
       scout_count = TDStep(g, parent, queue);
       queue.slide_window();
-#ifdef GEM_FORGE
-      m5_work_end(1, 0);
-#else
+      gf_work_end(1);
+#ifndef GEM_FORGE
       t.Stop();
       PrintStep("td", t.Seconds(), queue.size());
 #endif
@@ -290,7 +312,8 @@ int main(int argc, char *argv[]) {
     return -1;
 
   if (cli.num_threads() != -1) {
-    omp_set_num_threads(cli.num_threads());
+    // Start with one thread.
+    omp_set_num_threads(1);
   }
 
   Builder b(cli);
@@ -304,7 +327,13 @@ int main(int argc, char *argv[]) {
     given_sources = SourceGenerator<Graph>::loadSource(cli.filename());
   }
   SourcePicker<Graph> sp(g, given_sources);
-  auto BFSBound = [&sp](const Graph &g) { return DOBFS(g, sp.PickNext()); };
+  auto BFSBound = [&sp, &cli](const Graph &g) {
+    int alpha = 15;
+    int beta = 18;
+    int warm_cache = cli.warm_cache();
+    int num_threads = cli.num_threads();
+    return DOBFS(g, sp.PickNext(), num_threads, alpha, beta, warm_cache);
+  };
   SourcePicker<Graph> vsp(g, given_sources);
   auto VerifierBound = [&vsp](const Graph &g, const pvector<NodeID> &parent) {
     return BFSVerifier(g, vsp.PickNext(), parent);

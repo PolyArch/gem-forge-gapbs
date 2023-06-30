@@ -18,6 +18,46 @@
 #include "gem5/m5ops.h"
 #endif
 
+#ifdef GEM_FORGE
+#define gf_detail_sim_start() m5_detail_sim_start()
+#define gf_detail_sim_end() m5_detail_sim_end()
+#define gf_reset_stats() m5_reset_stats(0, 0)
+#define gf_dump_stats() m5_dump_stats(0, 0)
+#define gf_panic() m5_panic()
+#define gf_work_begin(x) m5_work_begin(x, 0)
+#define gf_work_end(x) m5_work_end(x, 0)
+
+#define gf_stream_nuca_region1d(name, start, elementSize, dim1)                \
+  m5_stream_nuca_region(name, start, elementSize, dim1, 0, 0)
+#define gf_stream_nuca_region2d(name, start, elementSize, dim1, dim2)          \
+  m5_stream_nuca_region(name, start, elementSize, dim1, dim2, 0)
+#define gf_stream_nuca_region3d(name, start, elementSize, dim1, dim2, dim3)    \
+  m5_stream_nuca_region(name, start, elementSize, dim1, dim2, dim3)
+#define get_4th_arg(name, start, elemSize, arg1, arg2, arg3, arg4, ...) arg4
+#define gf_stream_nuca_region(...)                                             \
+  get_4th_arg(__VA_ARGS__, gf_stream_nuca_region3d, gf_stream_nuca_region2d,   \
+              gf_stream_nuca_region1d)(__VA_ARGS__)
+
+#define gf_stream_nuca_align(A, B, elementOffset)                              \
+  m5_stream_nuca_align(A, B, elementOffset)
+#define gf_stream_nuca_set_property(start, property, value)                    \
+  m5_stream_nuca_set_property(start, property, value)
+#define gf_stream_nuca_remap() m5_stream_nuca_remap()
+
+#else
+#define gf_detail_sim_start()
+#define gf_detail_sim_end()
+#define gf_reset_stats()
+#define gf_dump_stats()
+#define gf_panic() assert(0 && "gf_panic")
+#define gf_work_begin(x)
+#define gf_work_end(x)
+#define gf_stream_nuca_region(args...)
+#define gf_stream_nuca_align(args...)
+#define gf_stream_nuca_set_property(args...)
+#define gf_stream_nuca_remap()
+#endif
+
 /*
 GAP Benchmark Suite
 Author: Scott Beamer
@@ -122,8 +162,6 @@ uint32_t log2Pow2(uint32_t v) {
   return log2;
 }
 
-#ifdef GEM_FORGE
-
 __attribute__((noinline)) uint64_t gf_warm_impl(char *buffer,
                                                 uint64_t totalBytes) {
   auto N = totalBytes / 64;
@@ -135,8 +173,15 @@ __attribute__((noinline)) uint64_t gf_warm_impl(char *buffer,
   return x;
 }
 
-void gf_warm_array(const char *name, void *buffer, uint64_t totalBytes) {
-  uint64_t cachedBytes = m5_stream_nuca_get_cached_bytes(buffer);
+void gf_warm_array(const char *name, void *buffer, uint64_t totalBytes,
+                   int checkCached = 1) {
+  // Default assume all cached.
+  uint64_t cachedBytes = totalBytes;
+#ifdef GEM_FORGE
+  if (checkCached) {
+    cachedBytes = m5_stream_nuca_get_cached_bytes(buffer);
+  }
+#endif
   printf("[GF_WARM] Region %s TotalBytes %lu CachedBytes %lu Cached %.2f%%.\n",
          name, totalBytes, cachedBytes,
          static_cast<float>(cachedBytes) / static_cast<float>(totalBytes) *
@@ -164,7 +209,6 @@ void gf_warm_array(const char *name, void *buffer, uint64_t totalBytes) {
          static_cast<float>(cachedBytes) / static_cast<float>(totalBytes) *
              100.f);
 }
-#endif
 
 /**
  * Read the partiton file.

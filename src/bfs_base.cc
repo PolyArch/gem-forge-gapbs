@@ -240,8 +240,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 
 #endif // USE_ADJ_LIST
 
-#ifdef GEM_FORGE
-  m5_detail_sim_start();
+  gf_detail_sim_start();
 
   if (warm_cache > 0) {
     auto num_nodes = g.num_nodes();
@@ -295,42 +294,29 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 
   startThreads(num_threads);
 
-  m5_reset_stats(0, 0);
-#endif
+  gf_reset_stats();
 
   uint64_t iter = 0;
 
-#ifdef USE_PUSH
+#if defined(USE_PUSH) && !defined(USE_PULL)
+
+  /********************** Push Version ***********************************/
 
 #ifdef USE_SPATIAL_FRONTIER
-
   // Push spatial frontier loop.
   auto *frontier = &squeue2;
   auto *next_frontier = &squeue;
   while (!frontier->empty()) {
-
 #else
-
   // Push global queue loop.
   while (!queue.empty()) {
-
 #endif
 
-#else
+    gf_work_begin(0);
 
-  // Pull loop.
-  int64_t awake_count = 1;
-  while (awake_count > 0) {
-
-#endif
-
-#ifdef GEM_FORGE
-    m5_work_begin(0, 0);
-#endif
-
+#ifndef GEM_FORGE
     t.Start();
-
-#ifdef USE_PUSH
+#endif
 
     BFSPushFunc(
 #ifdef USE_ADJ_LIST
@@ -359,7 +345,36 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
     queue.slide_window();
 #endif
 
+    gf_work_end(0);
+
+#ifndef GEM_FORGE
+    t.Stop();
+#endif
+
+#ifndef GEM_FORGE
+#ifndef USE_SPATIAL_FRONTIER
+    printf("%6zu  td%11" PRId64 "  %10.5lfms %lu-%lu\n", iter, queue.size(),
+           t.Millisecs(), queue.shared_out_start, queue.shared_in);
 #else
+    printf("%6zu.\n", iter);
+#endif
+#endif
+
+    iter++;
+  }
+
+#elif !defined(USE_PUSH) && defined(USE_PULL)
+
+  /********************** Pull Version ***********************************/
+
+  int64_t awake_count = 1;
+  while (awake_count > 0) {
+
+    gf_work_begin(0);
+
+#ifndef GEM_FORGE
+    t.Start();
+#endif
 
 #ifdef USE_ADJ_LIST
     awake_count = BFSPullFunc(adjGraph, parent.data(), next_parent.data());
@@ -372,30 +387,31 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 #endif
     bfsPullUpdate(g.num_nodes(), parent.data(), next_parent.data());
 
-#endif
+    gf_work_end(0);
 
-#ifdef GEM_FORGE
-    m5_work_end(0, 0);
-#endif
-
-    t.Stop();
+    printf("Iter %lu Awake %ld.\n", iter, awake_count);
 
 #ifndef GEM_FORGE
-#ifdef USE_PUSH
-#ifndef USE_SPATIAL_FRONTIER
-    printf("%6zu  td%11" PRId64 "  %10.5lfms %lu-%lu\n", iter, queue.size(),
-           t.Millisecs(), queue.shared_out_start, queue.shared_in);
-#else
-    printf("%6zu.\n", iter);
-#endif
-#endif
+    t.Stop();
 #endif
 
     iter++;
   }
 
+#elif defined(USE_PUSH) && defined(USE_PULL)
+
+  /********************** Push-Pull Version ******************************/
+
+  // Outer loop is push.
+
+#else
+
+#error "No Push/Pull specified?"
+
+#endif
+
+  gf_detail_sim_end();
 #ifdef GEM_FORGE
-  m5_detail_sim_end();
   exit(0);
 #endif
 
