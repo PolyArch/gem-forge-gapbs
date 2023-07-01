@@ -18,7 +18,7 @@
 
 const NodeID InitDepth = -1;
 
-__attribute__((noinline)) void bfsPushCSR(
+__attribute__((noinline)) NodeID bfsPushCSR(
 
     const Graph &g,
 
@@ -104,11 +104,16 @@ __attribute__((noinline)) void bfsPushCSR(
    * Start the OpenMP Parallel Loop.
    **************************************************************************/
 
+  NodeID scout_count = 0;
+
 #pragma omp parallel firstprivate(PRIV_OBJ_LIST)
   {
 
 #ifndef USE_SPATIAL_QUEUE
     SizedArray<NodeID> lqueue(num_nodes);
+#ifdef COMPUTE_SCOUT_COUNT
+    NodeID local_scout_count = 0;
+#endif
 #endif
 
     /**************************************************************************
@@ -156,6 +161,10 @@ __attribute__((noinline)) void bfsPushCSR(
                * Push into local or spatial queue.
                **************************************************************************/
 
+#ifdef COMPUTE_SCOUT_COUNT
+              auto out_degree = out_neigh_index[v + 1] - out_neigh_index[v];
+#endif
+
 #ifdef USE_SPATIAL_QUEUE
 
               /**
@@ -170,8 +179,17 @@ __attribute__((noinline)) void bfsPushCSR(
 #pragma ss stream_name "gap.bfs_push.enque.st"
               squeue_data[queue_idx * squeue_capacity + queue_loc] = v;
 
+#ifdef COMPUTE_SCOUT_COUNT
+#pragma ss stream_name "gap.bfs_push.scout.at"
+              __atomic_fetch_add(&squeue_meta[queue_idx].weightedSize[0],
+                                 out_degree, __ATOMIC_RELAXED);
+#endif
+
 #else
           lqueue.buffer[lqueue.num_elements++] = v;
+#ifdef COMPUTE_SCOUT_COUNT
+          local_scout_count += out_degree;
+#endif
 #endif
             }
 
@@ -201,18 +219,32 @@ __attribute__((noinline)) void bfsPushCSR(
 #else
 #pragma omp for schedule(static)
       for (int queue_idx = 0; queue_idx < squeue.num_queues; ++queue_idx) {
+#ifdef COMPUTE_SCOUT_COUNT
+        __atomic_fetch_add(&scout_count, squeue_meta[queue_idx].weightedSize[0],
+                           __ATOMIC_RELAXED);
+#endif
         queue.append(squeue.data + queue_idx * squeue.queue_capacity,
                      squeue.size(queue_idx, 0));
         squeue.clear(queue_idx, 0);
       }
 #endif
 #else
+#ifdef COMPUTE_SCOUT_COUNT
+    __atomic_fetch_add(&scout_count, local_scout_count, __ATOMIC_RELAXED);
+#endif
     queue.append(lqueue.begin(), lqueue.size());
     lqueue.clear();
 #endif
   }
 
-  return;
+#ifdef USE_SPATIAL_FRONTIER
+#ifdef COMPUTE_SCOUT_COUNT
+  // Simpy summarize scout_count if we are using spatial frontier.
+  scout_count = squeue.getAndClearTotalWeightedSize();
+#endif
+#endif
+
+  return scout_count;
 }
 
 __attribute__((noinline)) void bfsPushAdjList(
@@ -425,7 +457,7 @@ __attribute__((noinline)) void bfsPushAdjList(
   return;
 }
 
-__attribute__((noinline)) void bfsPushSingleAdjList(
+__attribute__((noinline)) NodeID bfsPushSingleAdjList(
 
     AdjGraphSingleAdjListT &graph,
 
@@ -506,11 +538,19 @@ __attribute__((noinline)) void bfsPushSingleAdjList(
    * Start the OpenMP Parallel Loop.
    **************************************************************************/
 
+  NodeID scout_count = 0;
 #pragma omp parallel firstprivate(PRIV_OBJ_LIST)
   {
 
 #ifndef USE_SPATIAL_QUEUE
     SizedArray<NodeID> lqueue(num_nodes);
+#ifdef COMPUTE_SCOUT_COUNT
+    NodeID local_scout_count = 0;
+#endif
+#endif
+
+#ifdef COMPUTE_SCOUT_COUNT
+    auto out_degrees = graph.degrees;
 #endif
 
     /**************************************************************************
@@ -554,6 +594,10 @@ __attribute__((noinline)) void bfsPushSingleAdjList(
              * Push into local or spatial queue.
              **************************************************************************/
 
+#ifdef COMPUTE_SCOUT_COUNT
+            auto out_degree = out_degrees[v];
+#endif
+
 #ifdef USE_SPATIAL_QUEUE
 
             /**
@@ -568,8 +612,17 @@ __attribute__((noinline)) void bfsPushSingleAdjList(
 #pragma ss stream_name "gap.bfs_push.enque.st"
             squeue_data[queue_idx * squeue_capacity + queue_loc] = v;
 
+#ifdef COMPUTE_SCOUT_COUNT
+#pragma ss stream_name "gap.bfs_push.scout.at"
+            __atomic_fetch_add(&squeue_meta[queue_idx].weightedSize[0],
+                               out_degree, __ATOMIC_RELAXED);
+#endif
+
 #else
           lqueue.buffer[lqueue.num_elements++] = v;
+#ifdef COMPUTE_SCOUT_COUNT
+          local_scout_count += out_degree;
+#endif
 #endif
           }
         };
@@ -595,22 +648,37 @@ __attribute__((noinline)) void bfsPushSingleAdjList(
 #else
 #pragma omp for schedule(static)
           for (int queue_idx = 0; queue_idx < squeue.num_queues; ++queue_idx) {
+#ifdef COMPUTE_SCOUT_COUNT
+            __atomic_fetch_add(&scout_count,
+                               squeue_meta[queue_idx].weightedSize[0],
+                               __ATOMIC_RELAXED);
+#endif
             queue.append(squeue.data + queue_idx * squeue.queue_capacity,
                          squeue.size(queue_idx, 0));
             squeue.clear(queue_idx, 0);
           }
 #endif
 #else
+#ifdef COMPUTE_SCOUT_COUNT
+    __atomic_fetch_add(&scout_count, local_scout_count, __ATOMIC_RELAXED);
+#endif
     queue.append(lqueue.begin(), lqueue.size());
     lqueue.clear();
 #endif
   }
 
-  return;
+#ifdef USE_SPATIAL_FRONTIER
+#ifdef COMPUTE_SCOUT_COUNT
+  // Simpy summarize scout_count if we are using spatial frontier.
+  scout_count = squeue.getAndClearTotalWeightedSize();
+#endif
+#endif
+
+  return scout_count;
 }
 
 // Sanity check that pull has no queue.
-#if defined(USE_PULL) || !defined(USE_PUSH)
+#if defined(USE_PULL) && !defined(USE_PUSH)
 #ifdef USE_SPATIAL_QUEUE
 #error "BFS pull no spatial queue."
 #endif
@@ -718,6 +786,69 @@ __attribute__((noinline)) void bfsPullUpdate(NodeID num_nodes, NodeID *parent,
 #pragma omp parallel for schedule(static) firstprivate(parent, next_parent)
   for (NodeID u = 0; u < num_nodes; u++) {
     parent[u] = next_parent[u];
+  }
+}
+
+__attribute__((noinline)) void bfsPullToFrontier(NodeID num_nodes,
+                                                 NodeID *parent,
+                                                 NodeID *next_parent,
+
+#ifdef USE_SPATIAL_FRONTIER
+                                                 SpatialQueue<NodeID> &squeue
+#else
+                                                 SlidingQueue<NodeID> &queue
+#endif
+) {
+
+#pragma omp parallel firstprivate(num_nodes, parent, next_parent)
+  {
+
+#ifdef USE_SPATIAL_FRONTIER
+    const auto squeue_data = squeue.data;
+    const auto squeue_meta = squeue.meta;
+    const auto squeue_capacity = squeue.queue_capacity;
+    const auto squeue_hash_div = squeue.hash_div;
+    const auto squeue_hash_mask = squeue.hash_mask;
+#else
+    SizedArray<NodeID> lqueue(num_nodes);
+#endif
+
+#pragma omp for schedule(static)
+    for (NodeID u = 0; u < num_nodes; u++) {
+
+#pragma ss stream_name "gap.bfs_frontier.np.ld"
+      auto np = next_parent[u];
+
+#pragma ss stream_name "gap.bfs_frontier.p.ld/fake-addr-base=np.ld"
+      auto p = parent[u];
+      if (np != p) {
+
+        // Push to the frontier.
+#ifdef USE_SPATIAL_FRONTIER
+
+        // Hash into the spatial queue.
+        auto queue_idx = (u / squeue_hash_div) & squeue_hash_mask;
+
+#pragma ss stream_name "gap.bfs_frontier.enque.at/fake-addr-base=np.ld"
+        auto queue_loc = __atomic_fetch_add(&squeue_meta[queue_idx].size[0], 1,
+                                            __ATOMIC_RELAXED);
+
+#pragma ss stream_name "gap.bfs_frontier.enque.st"
+        squeue_data[queue_idx * squeue_capacity + queue_loc] = u;
+
+#else
+        lqueue.buffer[lqueue.num_elements++] = u;
+#endif
+      }
+    }
+
+#ifdef USE_SPATIAL_FRONTIER
+// Nothing to do for spatial frontier.
+#else
+    // Push to the global queue.
+    queue.append(lqueue.begin(), lqueue.size());
+    lqueue.clear();
+#endif
   }
 }
 

@@ -235,6 +235,36 @@ public:
   double tolerance() const { return tolerance_; }
 };
 
+class CLBFS : public CLApp {
+  int alpha_ = 15;
+  int beta_ = 18;
+
+public:
+  CLBFS(int argc, char **argv, std::string name) : CLApp(argc, argv, name) {
+    get_args_ += "i:t:";
+    AddHelpLine('i', "i", "alpha: active edge ratio to pull",
+                std::to_string(alpha_));
+    AddHelpLine('t', "t", "beta: active node ratio to push",
+                std::to_string(beta_));
+  }
+
+  void HandleArg(signed char opt, char *opt_arg) override {
+    switch (opt) {
+    case 'i':
+      alpha_ = atoi(opt_arg);
+      break;
+    case 't':
+      beta_ = std::stod(opt_arg);
+      break;
+    default:
+      CLApp::HandleArg(opt, opt_arg);
+    }
+  }
+
+  int alpha() const { return alpha_; }
+  int beta() const { return beta_; }
+};
+
 template <typename WeightT_> class CLDelta : public CLApp {
   WeightT_ delta_ = 1;
 
@@ -275,7 +305,6 @@ public:
     AddHelpLine('e', "file", "output edge list to file");
     AddHelpLine('w', "", "make output weighted");
     AddHelpLine('r', "-1", "Source/Root node");
-
   }
 
   void HandleArg(signed char opt, char *opt_arg) override {

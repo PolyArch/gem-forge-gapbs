@@ -17,6 +17,8 @@ public:
   static constexpr int MaxBinsPerQueue = 128;
   struct QueueMetaInfo {
     int size[MaxBinsPerQueue];
+    // Used to implement scout count in bfs push.
+    int weightedSize[MaxBinsPerQueue];
   };
 
   SpatialQueue(int _num_queues, int _num_bins, int _queue_capacity,
@@ -54,8 +56,29 @@ public:
     }
     return ret;
   }
+  int weightedSize(int queue_idx, int bin_idx) const {
+    return this->meta[queue_idx].weightedSize[bin_idx];
+  }
+  int getAndClearTotalWeightedSize() const {
+    int ret = 0;
+    for (int queue_idx = 0; queue_idx < this->num_queues; ++queue_idx) {
+      for (int bin_idx = 0; bin_idx < this->num_bins; ++bin_idx) {
+        ret += this->weightedSize(queue_idx, bin_idx);
+        this->meta[queue_idx].weightedSize[bin_idx] = 0;
+      }
+    }
+    return ret;
+  }
   void clear(int queue_idx, int bin_idx) {
     this->meta[queue_idx].size[bin_idx] = 0;
+    this->meta[queue_idx].weightedSize[bin_idx] = 0;
+  }
+  void clear() {
+    for (int queue_idx = 0; queue_idx < this->num_queues; ++queue_idx) {
+      for (int bin_idx = 0; bin_idx < this->num_bins; ++bin_idx) {
+        this->clear(queue_idx, bin_idx);
+      }
+    }
   }
   bool empty() const {
     for (int queue_idx = 0; queue_idx < this->num_queues; ++queue_idx) {

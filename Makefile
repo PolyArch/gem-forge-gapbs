@@ -44,6 +44,16 @@ KERNELS += bfs_push_spatial_dyn128
 KERNELS += bfs_push_spatial_dyn256
 KERNELS += bfs_push_spatial_dyn512
 KERNELS += bfs_push_spatial_guided
+
+KERNELS += bfs_both
+KERNELS += bfs_both_sf
+KERNELS += bfs_both_adj_uno_aff_sf
+
+KERNELS += bfs_scout
+KERNELS += bfs_scout_sf
+KERNELS += bfs_scout_check
+KERNELS += bfs_scout_adj_uno_aff_sf
+
 KERNELS += sssp_outline
 KERNELS += sssp_check
 KERNELS += sssp

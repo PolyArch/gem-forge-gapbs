@@ -92,7 +92,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 
   const int num_banks = 64;
   const auto num_nodes = g.num_nodes();
-  const auto num_nodes_per_bank =
+  const auto __attribute__((unused)) num_nodes_per_bank =
       roundUp(num_nodes / num_banks, 128 / sizeof(NodeID));
 
 #ifdef USE_SPATIAL_QUEUE
@@ -370,7 +370,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
   int64_t awake_count = 1;
   while (awake_count > 0) {
 
-    gf_work_begin(0);
+    gf_work_begin(1);
 
 #ifndef GEM_FORGE
     t.Start();
@@ -387,9 +387,7 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 #endif
     bfsPullUpdate(g.num_nodes(), parent.data(), next_parent.data());
 
-    gf_work_end(0);
-
-    printf("Iter %lu Awake %ld.\n", iter, awake_count);
+    gf_work_end(1);
 
 #ifndef GEM_FORGE
     t.Stop();
@@ -402,7 +400,145 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 
   /********************** Push-Pull Version ******************************/
 
-  // Outer loop is push.
+  int scout_count = g.out_degree(source);
+
+#ifdef USE_SPATIAL_FRONTIER
+  // Push spatial frontier loop.
+  auto *frontier = &squeue2;
+  auto *next_frontier = &squeue;
+  while (!frontier->empty()) {
+#else
+  // Push global queue loop.
+  while (!queue.empty()) {
+#endif
+
+    // Check if we want to switch to pull.
+    // ! Negative alpha/beta directly specifies the iterations.
+    // ! Use pull for [-alpha, -beta) iterations.
+    if ((alpha > 0 && scout_count > num_edges / alpha) ||
+        (alpha < 0 && iter >= -alpha && iter < -beta)) {
+
+// Get awake_count as the queue size.
+#ifdef USE_SPATIAL_FRONTIER
+      int64_t awake_count = frontier->totalSize();
+      frontier->clear();
+#else
+      int64_t awake_count = queue.size();
+#endif
+      int64_t old_awake_count;
+
+      NodeID *parent_data = next_parent.data();
+      NodeID *next_parent_data = parent.data();
+
+      do {
+
+        gf_work_begin(1);
+
+#ifndef GEM_FORGE
+        t.Start();
+#endif
+
+        // First sync the two parent arrays.
+        bfsPullUpdate(g.num_nodes(), parent_data, next_parent_data);
+
+        old_awake_count = awake_count;
+
+        // Perform the pull-based BFS.
+#ifdef USE_ADJ_LIST
+        awake_count = BFSPullFunc(adjGraph, parent_data, next_parent_data);
+#else
+        awake_count = bfsPullCSR(g,
+#ifdef SHUFFLE_NODES
+                                 nodes_data,
+#endif
+                                 parent_data, next_parent_data);
+#endif
+
+        gf_work_end(1);
+
+#ifndef GEM_FORGE
+        t.Stop();
+#endif
+
+#ifndef GEM_FORGE
+        printf("Pull %6zu Awake %8ld.\n", iter, awake_count);
+#endif
+
+        iter++;
+      } while ((beta > 0 && ((awake_count >= old_awake_count) ||
+                             (awake_count > g.num_nodes() / beta))) ||
+               (beta < 0 && iter < -beta && awake_count > 0));
+
+      if (awake_count == 0) {
+        // we are done.
+        break;
+      }
+
+      gf_work_begin(2);
+      // Convert back to frontier by comparing parent and next_parent.
+      bfsPullToFrontier(g.num_nodes(), parent_data, next_parent_data,
+#if defined(USE_SPATIAL_FRONTIER)
+                        *frontier
+#else
+                        queue
+#endif
+      );
+      gf_work_end(2);
+      scout_count = 1;
+
+    } else {
+
+      gf_work_begin(0);
+
+#ifndef GEM_FORGE
+      t.Start();
+#endif
+
+      scout_count = BFSPushFunc(
+#ifdef USE_ADJ_LIST
+          adjGraph,
+#else
+          g,
+#endif
+          parent,
+#if defined(USE_SPATIAL_FRONTIER)
+          *next_frontier, *frontier
+#elif defined(USE_SPATIAL_QUEUE)
+          squeue, queue
+#else
+        queue
+#endif
+      );
+
+#ifdef USE_SPATIAL_FRONTIER
+      // Swap two spatial queues.
+      {
+        auto *tmp = frontier;
+        frontier = next_frontier;
+        next_frontier = tmp;
+      }
+#else
+      queue.slide_window();
+#endif
+
+      gf_work_end(0);
+
+#ifndef GEM_FORGE
+      t.Stop();
+#endif
+
+#ifndef GEM_FORGE
+#ifndef USE_SPATIAL_FRONTIER
+      printf("%6zu  td%11" PRId64 "  %10.5lfms %lu-%lu\n", iter, queue.size(),
+             t.Millisecs(), queue.shared_out_start, queue.shared_in);
+#else
+      printf("Push %6zu Scout %8d.\n", iter, scout_count);
+#endif
+#endif
+
+      iter++;
+    }
+  }
 
 #else
 
@@ -488,7 +624,7 @@ bool BFSVerifier(const Graph &g, NodeID source, const pvector<NodeID> &parent) {
 }
 
 int main(int argc, char *argv[]) {
-  CLApp cli(argc, argv, "breadth-first search");
+  CLBFS cli(argc, argv, "breadth-first search");
   if (!cli.ParseArgs())
     return -1;
 
@@ -509,8 +645,8 @@ int main(int argc, char *argv[]) {
   }
   SourcePicker<Graph> sp(g, given_sources);
   auto BFSBound = [&sp, &cli](const Graph &g) {
-    int alpha = 15;
-    int beta = 18;
+    int alpha = cli.alpha();
+    int beta = cli.beta();
     int warm_cache = cli.warm_cache();
     int num_threads = cli.num_threads();
     bool graph_partition = cli.graph_partition();
