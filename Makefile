@@ -83,8 +83,11 @@ SUITE = $(KERNELS) converter gscore bound_dfs nuca_analysis
 .PHONY: all
 all: $(SUITE)
 
-build_adj_list_graph: src/build_adj_list_graph.cc src/*.hh
+build_adj_list_graph_aff: src/build_adj_list_graph.cc src/*.hh
 	$(CXX) -DUSE_AFFINITY_ALLOC $(CXX_FLAGS) $< $(LINK_FLAGS) -o $@
+
+build_adj_list_graph: src/build_adj_list_graph.cc src/*.hh
+	$(CXX) $(CXX_FLAGS) $< $(LINK_FLAGS) -o $@
 
 %: src/%.cc src/*.h src/*.cc
 	$(CXX) $(CXX_FLAGS) $< $(LINK_FLAGS) -o $@

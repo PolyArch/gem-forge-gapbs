@@ -162,7 +162,14 @@ __attribute__((noinline)) NodeID bfsPushCSR(
                **************************************************************************/
 
 #ifdef COMPUTE_SCOUT_COUNT
-              auto out_degree = out_neigh_index[v + 1] - out_neigh_index[v];
+              // Write in this way to ensure that offsets are recognized by
+              // LLVM.
+              auto out_degree_ptr = out_neigh_index + v;
+#pragma ss stream_name "gap.bfs_push.scout_lhs.ld"
+              auto out_degree_lhs = out_degree_ptr[0];
+#pragma ss stream_name "gap.bfs_push.scout_rhs.ld"
+              auto out_degree_rhs = out_degree_ptr[1];
+              auto out_degree = out_degree_rhs - out_degree_lhs;
 #endif
 
 #ifdef USE_SPATIAL_QUEUE
@@ -749,7 +756,11 @@ __attribute__((noinline)) int64_t bfsPullCSR(const Graph &g,
       int64_t i = 0;
       while (true) {
 
+#ifdef BFS_PULL_ANALYZE_MAX_TRIP_COUNT
+#pragma ss stream_name "gap.bfs_pull.v.ld/analyze-max-trip-count"
+#else
 #pragma ss stream_name "gap.bfs_pull.v.ld"
+#endif
         NodeID v = in_ptr[i];
 
 #pragma ss stream_name "gap.bfs_pull.v_parent.ld"

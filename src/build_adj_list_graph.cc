@@ -117,6 +117,11 @@ void BuildImpl(int num_threads, int64_t num_nodes, NodeID *neigh_index_offset,
   printf("Start to build AdjListGraph, node %luB edge/node %d.\n",
          sizeof(typename AdjGraphT::AdjListNode), AdjGraphT::EdgesPerNode);
 
+  // Perform a fake alloc to initialize the allocator.
+#ifdef USE_AFFINITY_ALLOC
+  { auto ptr = malloc_aff(64, 0, nullptr); }
+#endif
+
 #ifndef GEM_FORGE
   Timer adjBuildTimer;
   adjBuildTimer.Start();
@@ -171,7 +176,8 @@ void BuildAdjGraph(const GraphT &g, int warm_cache = 2, int num_threads = 1) {
   // printf(">>>>>>>>>>>>>>>>>>> Testing AdjListGraph with 16B MetaData "
   //        "(NoPrevPtr).\n");
   // clear_affinity_alloc();
-  // BuildImpl<AdjGraphNoPrevT>(num_threads, num_nodes, neigh_index_offset, edges,
+  // BuildImpl<AdjGraphNoPrevT>(num_threads, num_nodes, neigh_index_offset,
+  // edges,
   //                            props_ptr);
   // print_affinity_alloc_stats();
 

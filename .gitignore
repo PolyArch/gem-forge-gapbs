@@ -17,3 +17,5 @@ benchmark/graphs/raw/*
 benchmark/graphs/*
 
 graph_partition/graphs/*
+
+.vscode

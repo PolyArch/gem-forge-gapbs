@@ -354,10 +354,10 @@ public:
     for (int i = 0; i < parts.size(); ++i) {
       auto x = parts[i];
       if (i == 0) {
-        ret.push_back(x / elemSize);
+        ret.push_back(x);
       } else {
         auto prev = parts[i - 1];
-        ret.push_back((x - prev) / elemSize);
+        ret.push_back(x - prev);
       }
     }
     return ret;

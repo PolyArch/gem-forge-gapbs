@@ -445,7 +445,7 @@ pageRankPullCSR(NodeID num_nodes,
 #endif
 
 #ifndef GEM_FORGE
-    printf("%d %p %p %d.\n", u, in_neigh_index[u], in_neigh_index[u + 1],
+    printf("%d %p %p %ld.\n", u, in_neigh_index[u], in_neigh_index[u + 1],
            in_neigh_index[u + 1] - in_neigh_index[u]);
 #endif
 

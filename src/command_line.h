@@ -236,16 +236,19 @@ public:
 };
 
 class CLBFS : public CLApp {
-  int alpha_ = 15;
-  int beta_ = 18;
+  int alpha_ = 6;
+  int beta_ = 5;
+  int delta_ = 0;
 
 public:
   CLBFS(int argc, char **argv, std::string name) : CLApp(argc, argv, name) {
-    get_args_ += "i:t:";
-    AddHelpLine('i', "i", "alpha: active edge ratio to pull",
+    get_args_ += "i:t:d:";
+    AddHelpLine('i', "i", "alpha: active edge percentage to pull",
                 std::to_string(alpha_));
-    AddHelpLine('t', "t", "beta: active node ratio to push",
+    AddHelpLine('t', "t", "beta: active node percentage to push",
                 std::to_string(beta_));
+    AddHelpLine('d', "d", "delta: total visited node percentage to pull",
+                std::to_string(delta_));
   }
 
   void HandleArg(signed char opt, char *opt_arg) override {
@@ -256,6 +259,9 @@ public:
     case 't':
       beta_ = std::stod(opt_arg);
       break;
+    case 'd':
+      delta_ = std::stod(opt_arg);
+      break;
     default:
       CLApp::HandleArg(opt, opt_arg);
     }
@@ -263,6 +269,7 @@ public:
 
   int alpha() const { return alpha_; }
   int beta() const { return beta_; }
+  int delta() const { return delta_; }
 };
 
 template <typename WeightT_> class CLDelta : public CLApp {

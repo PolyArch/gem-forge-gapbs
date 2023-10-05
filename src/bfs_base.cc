@@ -67,8 +67,8 @@ using AdjGraphT = AdjGraph;
 
 using namespace std;
 
-pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
-                      int alpha = 15, int beta = 18, int warm_cache = 2,
+pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads, int alpha,
+                      int beta, int delta, int warm_cache = 2,
                       bool graph_partition = false) {
   PrintStep("Source", static_cast<int64_t>(source));
   Timer t;
@@ -401,6 +401,11 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
   /********************** Push-Pull Version ******************************/
 
   int scout_count = g.out_degree(source);
+  int total_visited = 1;
+
+  int scout_threshold = alpha > 0 ? (num_edges * (alpha / 100.f)) : 1;
+  int awake_threshold = beta > 0 ? (num_nodes * (beta / 100.f)) : 1;
+  int visit_threshold = num_nodes * (delta / 100.f);
 
 #ifdef USE_SPATIAL_FRONTIER
   // Push spatial frontier loop.
@@ -415,7 +420,8 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
     // Check if we want to switch to pull.
     // ! Negative alpha/beta directly specifies the iterations.
     // ! Use pull for [-alpha, -beta) iterations.
-    if ((alpha > 0 && scout_count > num_edges / alpha) ||
+    if ((alpha > 0 && scout_count > scout_threshold &&
+         total_visited > visit_threshold) ||
         (alpha < 0 && iter >= -alpha && iter < -beta)) {
 
 // Get awake_count as the queue size.
@@ -456,17 +462,21 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 
         gf_work_end(1);
 
+        total_visited += awake_count;
+
 #ifndef GEM_FORGE
         t.Stop();
 #endif
 
 #ifndef GEM_FORGE
-        printf("Pull %6zu Awake %8ld.\n", iter, awake_count);
+        printf("Iter %6zu Pull Awake %8ld(%.2f) Visited %8d(%.2f).\n", iter,
+               awake_count, static_cast<float>(awake_count) / num_nodes,
+               total_visited, static_cast<float>(total_visited) / num_nodes);
 #endif
 
         iter++;
       } while ((beta > 0 && ((awake_count >= old_awake_count) ||
-                             (awake_count > g.num_nodes() / beta))) ||
+                             (awake_count > awake_threshold))) ||
                (beta < 0 && iter < -beta && awake_count > 0));
 
       if (awake_count == 0) {
@@ -483,6 +493,10 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
                         queue
 #endif
       );
+
+#ifndef USE_SPATIAL_FRONTIER
+      queue.slide_window();
+#endif
       gf_work_end(2);
       scout_count = 1;
 
@@ -516,9 +530,11 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
         auto *tmp = frontier;
         frontier = next_frontier;
         next_frontier = tmp;
+        total_visited += frontier->totalSize();
       }
 #else
       queue.slide_window();
+      total_visited += queue.size();
 #endif
 
       gf_work_end(0);
@@ -529,10 +545,12 @@ pvector<NodeID> DOBFS(const Graph &g, NodeID source, int num_threads,
 
 #ifndef GEM_FORGE
 #ifndef USE_SPATIAL_FRONTIER
-      printf("%6zu  td%11" PRId64 "  %10.5lfms %lu-%lu\n", iter, queue.size(),
+      printf("Iter %6zu  td%11" PRId64 "  %10.5lfms %lu-%lu\n", iter, queue.size(),
              t.Millisecs(), queue.shared_out_start, queue.shared_in);
 #else
-      printf("Push %6zu Scout %8d.\n", iter, scout_count);
+      printf("Iter %6zu Push Scout %8d(%.2f) Visited %8d(%.2f).\n", iter,
+             scout_count, static_cast<float>(scout_count) / num_edges,
+             total_visited, static_cast<float>(total_visited) / num_nodes);
 #endif
 #endif
 
@@ -647,10 +665,11 @@ int main(int argc, char *argv[]) {
   auto BFSBound = [&sp, &cli](const Graph &g) {
     int alpha = cli.alpha();
     int beta = cli.beta();
+    int delta = cli.delta();
     int warm_cache = cli.warm_cache();
     int num_threads = cli.num_threads();
     bool graph_partition = cli.graph_partition();
-    return DOBFS(g, sp.PickNext(), num_threads, alpha, beta, warm_cache,
+    return DOBFS(g, sp.PickNext(), num_threads, alpha, beta, delta, warm_cache,
                  graph_partition);
   };
   SourcePicker<Graph> vsp(g, given_sources);
